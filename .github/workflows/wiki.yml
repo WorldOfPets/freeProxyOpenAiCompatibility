@@ -1,0 +1,61 @@
+name: Sync docs to wiki
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "docs/**"
+      - "scripts/sync_wiki.py"
+      - ".github/workflows/wiki.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Clone wiki
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! git clone --depth 1 \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" \
+            "${RUNNER_TEMP}/wiki"; then
+            echo "::error::Cannot clone ${GITHUB_REPOSITORY}.wiki.git. Enable Wikis in Settings -> Features and create the first page in the web UI."
+            exit 1
+          fi
+
+      - name: Render wiki pages
+        run: |
+          python scripts/sync_wiki.py \
+            --source docs \
+            --dest "${RUNNER_TEMP}/wiki" \
+            --repo-url "https://github.com/${GITHUB_REPOSITORY}" \
+            --branch "${GITHUB_REF_NAME}"
+
+      - name: Commit and push
+        working-directory: ${{ runner.temp }}/wiki
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Wiki is already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --all
+          git commit -m "docs: sync wiki from ${GITHUB_SHA::7}"
+          git push

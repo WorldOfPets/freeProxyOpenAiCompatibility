@@ -3,10 +3,13 @@
 Единый OpenAI-совместимый прокси к веб-чатам GLM, Qwen и DeepSeek. Все три
 провайдера работают **внутри одного Python-процесса**:
 
-- **DeepSeek Web** — PoW через `wasmtime`, сессии и SSE;
+- **DeepSeek Web** — PoW через `wasmtime`, сессии и SSE; порт
+  [FreeDeepseekAPI](https://github.com/ForgetMeAI/FreeDeepseekAPI);
 - **GLM / Z.AI** — прямой HTTP, подпись, Aliyun captcha и device-token pool;
+  порт [GLM-Free-API](https://github.com/izaart95-jpg/GLM-Free-API);
 - **Qwen Chat** — встроенный Playwright-сеанс, который выполняет запросы из
-  реальной страницы (Qwen WAF не пропускает обычный HTTP).
+  реальной страницы (Qwen WAF не пропускает обычный HTTP); порт
+  [FreeQwenApi](https://github.com/y13sint/FreeQwenApi).
 
 Прокси написан на **Python 3.12 / FastAPI / httpx** и управляется через **uv**.
 Он даёт один адрес `http://127.0.0.1:8080/v1`, один клиентский ключ, общий
@@ -424,6 +427,51 @@ tests/                   # pytest + mock upstream transport
 scripts/                 # smoke, check_upstreams, run_upstreams
 config/                  # реестр провайдеров
 examples/opencode.jsonc  # готовый provider для OpenCode V2
+```
+
+## Оригинальные проекты
+
+FreeProxyAPI вырос из трёх прокси-серверов для веб-чатов. Их протоколы
+портированы в `src/freeproxy/native/`, но сами проекты остаются полезным
+референсом и обновляются при изменениях веб-API:
+
+| Провайдер | Оригинальный прокси | Лицензия |
+|---|---|---|
+| DeepSeek Web | [ForgetMeAI/FreeDeepseekAPI](https://github.com/ForgetMeAI/FreeDeepseekAPI) | MIT |
+| Qwen Chat | [y13sint/FreeQwenApi](https://github.com/y13sint/FreeQwenApi) | не указана |
+| GLM / Z.AI | [izaart95-jpg/GLM-Free-API](https://github.com/izaart95-jpg/GLM-Free-API) | MIT |
+
+Запускать их вместе с FreeProxyAPI больше не нужно: все три провайдера
+работают внутри одного процесса. Код GLM captcha портирован из
+[GLM-Free-API](https://github.com/izaart95-jpg/GLM-Free-API) с сохранением
+MIT-атрибуции в
+[`src/freeproxy/native/glm_captcha/LICENSE.glm-free-api`](src/freeproxy/native/glm_captcha/LICENSE.glm-free-api).
+
+## GitHub Wiki
+
+Документация из `docs/` автоматически публикуется в
+[GitHub Wiki](https://github.com/WorldOfPets/freeProxyOpenAiCompatibility/wiki)
+workflow-ом [`.github/workflows/wiki.yml`](.github/workflows/wiki.yml) при
+пуше в `master` (и вручную через `workflow_dispatch`).
+
+- Источник истины — `docs/*.md`; страницы вики генерируются, не редактируйте
+  их вручную.
+- `Home.md` и `_Sidebar.md` собираются автоматически.
+- Ссылки между документами превращаются в ссылки вики, ссылки на файлы
+  репозитория — в абсолютные GitHub URL.
+- Удалённые из `docs/` страницы удаляются из вики; страницы, созданные
+  вручную, не трогаются.
+- Нужно один раз включить **Settings → Actions → General → Workflow
+  permissions → Read and write permissions**, иначе `GITHUB_TOKEN` не сможет
+  запушить вики. Первую страницу вики GitHub создаёт только через веб-интерфейс
+  (она уже создана).
+
+Локальная проверка:
+
+```bash
+git clone https://github.com/WorldOfPets/freeProxyOpenAiCompatibility.wiki.git /tmp/wiki
+python scripts/sync_wiki.py --source docs --dest /tmp/wiki \
+  --repo-url https://github.com/WorldOfPets/freeProxyOpenAiCompatibility
 ```
 
 ## ECC (skills / agents / plugins)
