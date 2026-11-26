@@ -1,0 +1,41 @@
+services:
+  gateway:
+    build: .
+    image: freeproxyapi:local
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      FP_HOST: 0.0.0.0
+      FP_PORT: "8080"
+      FP_PROVIDERS_FILE: /app/config/providers.docker.json
+      FP_QWEN_HEADLESS: "true"
+      FP_AUTH_BROWSER_CHANNEL: chromium
+      # All providers are native; no host-side bridge ports are used.
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./config:/app/config:ro
+      # Native providers read tokens here; GLM consumes device tokens from
+      # tokens.sqlite, so this mount must stay writable.
+      - ./secrets:/app/secrets
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    shm_size: "1gb"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

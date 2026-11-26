@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# Secrets and local state
+.env
+.env.*
+!.env.example
+secrets/
+config/providers.local.json
+*.sqlite
+*.sqlite3
+logs/
+sessions/
+auth*.json
+deepseek-auth.json
+tokens.sqlite
+
+# Upstream checkouts and local tooling
+.upstreams/
+node_modules/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+*.egg-info/

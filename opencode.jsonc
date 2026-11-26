@@ -1,0 +1,140 @@
+{
+  // FreeProxyAPI as an OpenAI-compatible provider for OpenCode V2.
+  // The API key is read from secrets/opencode-key.txt (gitignored).
+  "$schema": "https://opencode.ai/config.json",
+  "model": "freeproxy/auto",
+  "providers": {
+    "freeproxy": {
+      "name": "FreeProxyAPI",
+      "env": ["FREEPROXY_API_KEY"],
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "http://127.0.0.1:8080/v1",
+        "apiKey": "{file:./secrets/opencode-key.txt}",
+        "headerTimeout": 660000,
+        "chunkTimeout": 660000
+      },
+      "compatibility": {
+        "maxTokensField": "max_tokens",
+        "streamUsage": false
+      },
+      "models": {
+        "auto": {
+          "name": "Auto (GLM → Qwen → DeepSeek)",
+          "modelID": "auto",
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "output": ["text"],
+            "freeform": []
+          },
+          "limit": { "context": 128000, "output": 8192 }
+        },
+        "fast": {
+          "name": "Fast (GLM Flash → Qwen Plus → DeepSeek)",
+          "modelID": "fast",
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "output": ["text"],
+            "freeform": []
+          },
+          "limit": { "context": 128000, "output": 8192 }
+        },
+        "coding": {
+          "name": "Coding (Qwen Coder → GLM → DeepSeek)",
+          "modelID": "coding",
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "output": ["text"],
+            "freeform": []
+          },
+          "compatibility": {
+            "reasoningField": "reasoning_content"
+          },
+          "limit": { "context": 128000, "output": 8192 }
+        },
+        "reasoning": {
+          "name": "Reasoning (DeepSeek → GLM → Qwen)",
+          "modelID": "reasoning",
+          "capabilities": {
+            "tools": true,
+            "reasoning": { "supported": true },
+            "input": ["text"],
+            "output": ["text"],
+            "freeform": []
+          },
+          "compatibility": {
+            "reasoningField": "reasoning_content",
+            "requireReasoning": true
+          },
+          "limit": { "context": 128000, "output": 8192 }
+        },
+        "glm-flash": {
+          "name": "GLM 5.3 Flash",
+          "modelID": "glm/glm-5.3-flash",
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "output": ["text"],
+            "freeform": []
+          },
+          "limit": { "context": 128000, "output": 8192 }
+        },
+        "glm": {
+          "name": "GLM 5.3",
+          "modelID": "glm/glm-5.3",
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "output": ["text"],
+            "freeform": []
+          },
+          "compatibility": {
+            "reasoningField": "reasoning_content"
+          },
+          "limit": { "context": 128000, "output": 8192 }
+        },
+        "deepseek-flash": {
+          "name": "DeepSeek V4.1 Flash",
+          "modelID": "deepseek/deepseek-v4.1-flash",
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "output": ["text"],
+            "freeform": []
+          },
+          "limit": { "context": 128000, "output": 8192 }
+        },
+        "deepseek-chat": {
+          "name": "DeepSeek Chat",
+          "modelID": "deepseek/deepseek-chat",
+          "capabilities": {
+            "tools": true,
+            "input": ["text"],
+            "output": ["text"],
+            "freeform": []
+          },
+          "limit": { "context": 128000, "output": 8192 }
+        },
+        "deepseek-reasoner": {
+          "name": "DeepSeek Reasoner",
+          "modelID": "deepseek/deepseek-reasoner",
+          "capabilities": {
+            "tools": true,
+            "reasoning": { "supported": true },
+            "input": ["text"],
+            "output": ["text"],
+            "freeform": []
+          },
+          "compatibility": {
+            "reasoningField": "reasoning_content",
+            "requireReasoning": true
+          },
+          "limit": { "context": 128000, "output": 8192 }
+        }
+      }
+    }
+  }
+}

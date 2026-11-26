@@ -1,0 +1,67 @@
+[project]
+name = "freeproxyapi"
+version = "0.1.0"
+description = "One OpenAI-compatible proxy with native GLM, Qwen and DeepSeek web-chat providers"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "FreeProxyAPI contributors" }]
+keywords = ["fastapi", "openai-compatible", "proxy", "glm", "qwen", "deepseek", "opencode"]
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "httpx>=0.28,<1.0",
+    "playwright>=1.48,<2.0",
+    "pycryptodome>=4.6.0",
+    "pydantic>=2.9,<3.0",
+    "pydantic-settings>=2.5,<3.0",
+    "python-dotenv>=1.0,<2.0",
+    "uvicorn[standard]>=0.30,<1.0",
+    "wasmtime>=27,<40",
+]
+
+[dependency-groups]
+dev = [
+    "asgi-lifespan>=2.1,<3.0",
+    "pytest>=8.3,<9.0",
+    "pytest-asyncio>=0.24,<1.0",
+    "pytest-cov>=5.0,<7.0",
+    "ruff>=0.7,<1.0",
+]
+
+[project.scripts]
+freeproxy = "freeproxy.main:main"
+freeproxy-auth = "freeproxy.auth.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/freeproxy"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [
+    ".opencode",
+    "src/freeproxy/native/glm_captcha/replay_template.py",
+    "src/freeproxy/native/glm_captcha/generate_device_data.py",
+    "src/freeproxy/native/glm_captcha/device_token_gen.py",
+    "src/freeproxy/native/glm_captcha/captcha_param_gen.py",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["freeproxy"]
+
+[tool.ruff.format]
+quote-style = "double"

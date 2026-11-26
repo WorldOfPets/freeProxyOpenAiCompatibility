@@ -1,0 +1,126 @@
+{
+  "version": 1,
+  "providers": [
+    {
+      "id": "glm",
+      "name": "GLM / Z.AI native (in-process)",
+      "base_url": "http://glm.native",
+      "api_key": "",
+      "auth_mode": "none",
+      "auth_required": false,
+      "native": "glm",
+      "prefix": "glm",
+      "enabled": true,
+      "models": [
+        "glm-5.3-flash",
+        "glm-5.3",
+        "glm-5.2",
+        "GLM-5.1",
+        "GLM-5-Turbo",
+        "GLM-5v-Turbo",
+        "glm-4.7"
+      ],
+      "default_model": "glm-5.3-flash",
+      "models_path": "/v1/models",
+      "chat_path": "/v1/chat/completions",
+      "max_rpm": 6,
+      "max_requests_per_day": 300,
+      "max_concurrency": 1,
+      "queue_timeout_seconds": 60,
+      "timeout_seconds": 600,
+      "max_retries": 0,
+      "session_header": false,
+      "supports_tools": true,
+      "inject_max_tokens": true,
+      "extra_headers": {}
+    },
+    {
+      "id": "qwen",
+      "name": "Qwen Chat native (in-process)",
+      "base_url": "http://qwen.native",
+      "api_key": "",
+      "auth_mode": "none",
+      "auth_required": false,
+      "native": "qwen",
+      "prefix": "qwen",
+      "enabled": true,
+      "models": [
+        "qwen3.7-max",
+        "qwen3.7-plus",
+        "qwen3.6-plus",
+        "qwen3-coder-plus",
+        "qwen3-vl-plus"
+      ],
+      "default_model": "qwen3.7-max",
+      "models_path": "/v1/models",
+      "chat_path": "/v1/chat/completions",
+      "max_rpm": 6,
+      "max_requests_per_day": 300,
+      "max_concurrency": 1,
+      "queue_timeout_seconds": 60,
+      "timeout_seconds": 600,
+      "max_retries": 0,
+      "session_header": false,
+      "supports_tools": true,
+      "inject_max_tokens": true,
+      "extra_headers": {}
+    },
+    {
+      "id": "deepseek",
+      "name": "DeepSeek native (in-process)",
+      "base_url": "http://deepseek.native",
+      "api_key": "",
+      "auth_mode": "none",
+      "auth_required": false,
+      "native": "deepseek",
+      "prefix": "deepseek",
+      "enabled": true,
+      "models": [
+        "deepseek-chat",
+        "deepseek-reasoner",
+        "deepseek-chat-search",
+        "deepseek-v4.1-flash",
+        "deepseek-default"
+      ],
+      "default_model": "deepseek-chat",
+      "models_path": "/v1/models",
+      "chat_path": "/v1/chat/completions",
+      "max_rpm": 10,
+      "max_requests_per_day": 400,
+      "max_concurrency": 2,
+      "queue_timeout_seconds": 8,
+      "timeout_seconds": 600,
+      "max_retries": 0,
+      "session_header": true,
+      "supports_tools": true,
+      "inject_max_tokens": true,
+      "extra_headers": {}
+    }
+  ],
+  "aliases": {
+    "auto": [
+      "glm/glm-5.3-flash",
+      "qwen/qwen3.7-max",
+      "deepseek/deepseek-chat"
+    ],
+    "fast": [
+      "glm/glm-5.3-flash",
+      "qwen/qwen3.7-plus",
+      "deepseek/deepseek-chat"
+    ],
+    "coding": [
+      "qwen/qwen3-coder-plus",
+      "glm/glm-4.7",
+      "deepseek/deepseek-chat"
+    ],
+    "reasoning": [
+      "deepseek/deepseek-reasoner",
+      "glm/glm-5.3",
+      "qwen/qwen3.7-max"
+    ],
+    "vision": [
+      "qwen/qwen3-vl-plus",
+      "glm/GLM-5v-Turbo"
+    ]
+  }
+}
