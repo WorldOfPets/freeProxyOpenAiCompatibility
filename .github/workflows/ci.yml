@@ -17,11 +17,8 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Verify lockfile
-        run: uv lock --check
-
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --locked
 
       - name: Lint
         run: uv run ruff check .
