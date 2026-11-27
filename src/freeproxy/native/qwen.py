@@ -369,6 +369,10 @@ class QwenBrowserTransport:
                 "provider_not_configured",
             ) from exc
 
+    async def _auth_async(self) -> dict[str, Any]:
+        """Read the auth store off the event loop (it does blocking file I/O)."""
+        return await asyncio.to_thread(self._auth)
+
     async def _emit(self, payload: dict[str, Any]) -> None:
         if not isinstance(payload, dict):
             return
@@ -420,14 +424,17 @@ class QwenBrowserTransport:
         async with self._start_lock:
             if self._page is not None and not self._page.is_closed():
                 return
+            # Read the auth store before acquiring Playwright: the blocking read
+            # must not happen after browser resources exist, so a slow or
+            # cancelled read never leaves a half-started browser behind.
+            auth = await self._auth_async()
+            cookies = self._normalize_cookies(auth.get("cookies"))
+            token = str(auth.get("token") or "")
             from playwright.async_api import async_playwright
 
             try:
                 self._playwright = await async_playwright().start()
                 launch_args = ["--disable-blink-features=AutomationControlled"]
-                auth = self._auth()
-                cookies = self._normalize_cookies(auth.get("cookies"))
-                token = str(auth.get("token") or "")
 
                 if self.profile_dir is not None and self.profile_dir.is_dir():
                     try:
@@ -656,7 +663,7 @@ class QwenBrowserTransport:
         await self._ensure_started()
         await self._request_lock.acquire()
         try:
-            auth = self._auth()
+            auth = await self._auth_async()
             token = await self._token()
             headers = self._headers(token, auth)
             chat_id = await self._create_chat(model, headers, "OpenAI request")
@@ -771,7 +778,7 @@ class QwenBrowserTransport:
             if self._active_id == request_id:
                 self._queue = None
                 self._active_id = None
-            auth = self._auth()
+            auth = await self._auth_async()
             token = await self._token()
             await self._delete_chat(chat_id, self._headers(token, auth))
         except Exception:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -62,11 +63,12 @@ async def admin_limits(request: Request) -> dict[str, Any]:
 
 @router.get("/auth")
 async def admin_auth() -> dict[str, Any]:
-    paths = AuthPaths.from_env()
+    paths = await asyncio.to_thread(AuthPaths.from_env)
     store = TokenStore(paths.store)
+    providers = await asyncio.to_thread(store.status)
     return {
         "store": str(paths.store),
-        "providers": store.status(),
+        "providers": providers,
         "repos": {
             "deepseek": str(paths.deepseek_repo),
             "qwen": str(paths.qwen_repo),
@@ -77,9 +79,10 @@ async def admin_auth() -> dict[str, Any]:
 
 @router.post("/auth/export")
 async def admin_auth_export() -> dict[str, Any]:
-    paths = AuthPaths.from_env()
+    paths = await asyncio.to_thread(AuthPaths.from_env)
     store = TokenStore(paths.store)
-    return {"exported": export_all(store, paths)}
+    exported = await asyncio.to_thread(export_all, store, paths)
+    return {"exported": exported}
 
 
 @router.post("/providers/{provider_id}/reset")
