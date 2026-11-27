@@ -378,6 +378,40 @@ class QwenBrowserTransport:
             return
         await self._queue.put(payload)
 
+    async def _close_context(self) -> None:
+        """Close the current context/browser without stopping Playwright.
+
+        Used when the persistent profile turns out to be unusable so the same
+        Playwright instance can drive the isolated-context fallback.
+        """
+        context, browser = self._context, self._browser
+        self._page = None
+        self._context = None
+        self._browser = None
+        if context is not None:
+            with contextlib.suppress(Exception):
+                await context.close()
+        if browser is not None and browser is not context:
+            with contextlib.suppress(Exception):
+                await browser.close()
+
+    async def _close_browser(self) -> None:
+        """Release page/context/browser/Playwright, tolerating partial startup."""
+        context, browser, playwright = self._context, self._browser, self._playwright
+        self._page = None
+        self._context = None
+        self._browser = None
+        self._playwright = None
+        if context is not None:
+            with contextlib.suppress(Exception):
+                await context.close()
+        if browser is not None and browser is not context:
+            with contextlib.suppress(Exception):
+                await browser.close()
+        if playwright is not None:
+            with contextlib.suppress(Exception):
+                await playwright.stop()
+
     async def _ensure_started(self) -> None:
         if self._closed:
             raise NativeError(503, "Qwen browser transport is closed", "native_closed")
@@ -388,92 +422,95 @@ class QwenBrowserTransport:
                 return
             from playwright.async_api import async_playwright
 
-            self._playwright = await async_playwright().start()
-            launch_args = ["--disable-blink-features=AutomationControlled"]
-            auth = self._auth()
-            cookies = self._normalize_cookies(auth.get("cookies"))
-            token = str(auth.get("token") or "")
+            try:
+                self._playwright = await async_playwright().start()
+                launch_args = ["--disable-blink-features=AutomationControlled"]
+                auth = self._auth()
+                cookies = self._normalize_cookies(auth.get("cookies"))
+                token = str(auth.get("token") or "")
 
-            if self.profile_dir is not None and self.profile_dir.is_dir():
-                try:
-                    self._context = await self._playwright.chromium.launch_persistent_context(
-                        user_data_dir=str(self.profile_dir),
-                        channel=self.channel,
-                        headless=self.headless,
-                        args=launch_args,
-                        user_agent=USER_AGENT,
-                        locale="en-US",
-                        timezone_id="Europe/Paris",
-                        viewport={"width": 1920, "height": 1080},
-                    )
-                    self._browser = self._context.browser
-                    if cookies:
-                        with contextlib.suppress(Exception):
-                            await self._context.add_cookies(cookies)
-                    if token:
-                        await self._context.add_init_script(
-                            "try { localStorage.setItem('token', "
-                            + json.dumps(token)
-                            + "); } catch (e) {}"
+                if self.profile_dir is not None and self.profile_dir.is_dir():
+                    try:
+                        self._context = await self._playwright.chromium.launch_persistent_context(
+                            user_data_dir=str(self.profile_dir),
+                            channel=self.channel,
+                            headless=self.headless,
+                            args=launch_args,
+                            user_agent=USER_AGENT,
+                            locale="en-US",
+                            timezone_id="Europe/Paris",
+                            viewport={"width": 1920, "height": 1080},
                         )
-                    page = (
-                        self._context.pages[0]
-                        if self._context.pages
-                        else await self._context.new_page()
+                        self._browser = self._context.browser
+                        if cookies:
+                            with contextlib.suppress(Exception):
+                                await self._context.add_cookies(cookies)
+                        if token:
+                            await self._context.add_init_script(
+                                "try { localStorage.setItem('token', "
+                                + json.dumps(token)
+                                + "); } catch (e) {}"
+                            )
+                        page = (
+                            self._context.pages[0]
+                            if self._context.pages
+                            else await self._context.new_page()
+                        )
+                        await page.goto(
+                            BASE_URL + "/",
+                            wait_until="domcontentloaded",
+                            timeout=self.timeout_ms,
+                        )
+                        await page.expose_function("__fp_qwen_emit", self._emit)
+                        self._page = page
+                        return
+                    except Exception:
+                        logger.warning(
+                            "Qwen: persistent profile %s is unusable; using an isolated context",
+                            self.profile_dir,
+                            exc_info=True,
+                        )
+                        await self._close_context()
+
+                try:
+                    self._browser = await self._playwright.chromium.launch(
+                        channel=self.channel, headless=self.headless, args=launch_args
                     )
-                    await page.goto(
-                        BASE_URL + "/",
-                        wait_until="domcontentloaded",
-                        timeout=self.timeout_ms,
-                    )
-                    await page.expose_function("__fp_qwen_emit", self._emit)
-                    self._page = page
-                    return
                 except Exception:
                     logger.warning(
-                        "Qwen: persistent profile %s is unusable; using an isolated context",
-                        self.profile_dir,
-                        exc_info=True,
+                        "Qwen: Chrome channel %s is unavailable; falling back to Chromium",
+                        self.channel,
                     )
+                    self._browser = await self._playwright.chromium.launch(
+                        headless=self.headless, args=launch_args
+                    )
+                self._context = await self._browser.new_context(
+                    user_agent=USER_AGENT,
+                    locale="en-US",
+                    timezone_id="Europe/Paris",
+                    viewport={"width": 1920, "height": 1080},
+                )
+                if cookies:
                     with contextlib.suppress(Exception):
-                        await self._context.close()
-                    self._context = None
-                    self._browser = None
-
-            try:
-                self._browser = await self._playwright.chromium.launch(
-                    channel=self.channel, headless=self.headless, args=launch_args
+                        await self._context.add_cookies(cookies)
+                if token:
+                    script = (
+                        "try { localStorage.setItem('token', "
+                        + json.dumps(token)
+                        + "); } catch (e) {}"
+                    )
+                    await self._context.add_init_script(script)
+                page = await self._context.new_page()
+                await page.goto(
+                    BASE_URL + "/",
+                    wait_until="domcontentloaded",
+                    timeout=self.timeout_ms,
                 )
-            except Exception:
-                logger.warning(
-                    "Qwen: Chrome channel %s is unavailable; falling back to Chromium",
-                    self.channel,
-                )
-                self._browser = await self._playwright.chromium.launch(
-                    headless=self.headless, args=launch_args
-                )
-            self._context = await self._browser.new_context(
-                user_agent=USER_AGENT,
-                locale="en-US",
-                timezone_id="Europe/Paris",
-                viewport={"width": 1920, "height": 1080},
-            )
-            if cookies:
-                with contextlib.suppress(Exception):
-                    await self._context.add_cookies(cookies)
-            if token:
-                script = (
-                    "try { localStorage.setItem('token', " + json.dumps(token) + "); } catch (e) {}"
-                )
-                await self._context.add_init_script(script)
-            page = await self._context.new_page()
-            await page.goto(
-                BASE_URL + "/",
-                wait_until="domcontentloaded",
-                timeout=self.timeout_ms,
-            )
-            await page.expose_function("__fp_qwen_emit", self._emit)
-            self._page = page
+                await page.expose_function("__fp_qwen_emit", self._emit)
+                self._page = page
+            except BaseException:
+                await self._close_browser()
+                raise
 
     @staticmethod
     def _normalize_cookies(raw: Any) -> list[dict[str, Any]]:
@@ -747,13 +784,7 @@ class QwenBrowserTransport:
         if self._closed:
             return
         self._closed = True
-        for resource in (self._context, self._browser):
-            if resource is not None:
-                with contextlib.suppress(Exception):
-                    await resource.close()
-        if self._playwright is not None:
-            with contextlib.suppress(Exception):
-                await self._playwright.stop()
+        await self._close_browser()
 
 
 class QwenService:
