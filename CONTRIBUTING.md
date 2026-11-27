@@ -26,7 +26,7 @@ uv run playwright install chromium
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest -q
-uv run pytest -q --cov=freeproxy --cov-report=term-missing --cov-fail-under=60
+uv run pytest -q --cov=freeproxy --cov-report=term-missing --cov-fail-under=65
 ```
 
 CI runs the same commands.
