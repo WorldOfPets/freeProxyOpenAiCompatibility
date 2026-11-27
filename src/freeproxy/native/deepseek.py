@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..auth.paths import AuthPaths
 from ..auth.store import AuthStoreError, TokenStore
+from ..retry import parse_retry_after
 from .pow import POW_DEFAULT_WASM, PowError, PowSolver
 
 logger = logging.getLogger("freeproxy.native.deepseek")
@@ -66,13 +67,7 @@ class NativeError(RuntimeError):
 
 
 def _retry_after(response: httpx.Response) -> int | None:
-    raw = response.headers.get("retry-after", "").strip()
-    if not raw:
-        return None
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        return None
+    return parse_retry_after(response.headers.get("retry-after"))
 
 
 def _content_text(content: Any) -> str:

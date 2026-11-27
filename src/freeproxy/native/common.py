@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import contextlib
 import json
-import math
 import re
 import time
 import uuid
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from typing import Any
+
+from ..retry import parse_retry_after
 
 MAX_TOOL_SCHEMA_CHARS = 24_000
 MAX_PROMPT_CHARS = 80_000
@@ -33,21 +32,7 @@ class NativeError(RuntimeError):
 
 
 def retry_after_seconds(response: Any) -> int | None:
-    # keep in sync with providers.http.ProviderHTTP.retry_after_seconds
-    raw = str(response.headers.get("retry-after", "")).strip()
-    if not raw:
-        return None
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        pass
-    try:
-        retry_at = parsedate_to_datetime(raw)
-    except (TypeError, ValueError):
-        return None
-    if retry_at.tzinfo is None:
-        retry_at = retry_at.replace(tzinfo=UTC)
-    return max(1, math.ceil((retry_at - datetime.now(UTC)).total_seconds()))
+    return parse_retry_after(response.headers.get("retry-after"))
 
 
 def content_text(content: Any) -> str:

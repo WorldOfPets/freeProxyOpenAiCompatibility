@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from pathlib import Path
 
 import httpx
@@ -11,6 +13,7 @@ from freeproxy.auth.store import TokenStore
 from freeproxy.native.deepseek import (
     MODEL_CONFIGS,
     DeepSeekStreamParser,
+    _retry_after,
     create_deepseek_app,
     format_prompt,
     looks_like_tool_markup,
@@ -287,3 +290,14 @@ async def test_native_upstream_401_is_mapped(tmp_path):
         )
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "upstream_session_error"
+
+
+def test_retry_after_parses_http_date():
+    retry_at = datetime.now(UTC) + timedelta(seconds=30)
+    response = httpx.Response(
+        429,
+        headers={"retry-after": format_datetime(retry_at, usegmt=True)},
+    )
+    seconds = _retry_after(response)
+    assert seconds is not None
+    assert 20 <= seconds <= 30
