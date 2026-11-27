@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime, timedelta
-from email.utils import format_datetime
+from email.utils import format_datetime, parsedate_to_datetime
 
 import httpx
 import pytest
@@ -70,6 +70,23 @@ def test_retry_after_seconds_clamps_past_http_date_to_one():
         429,
         headers={"retry-after": format_datetime(retry_at, usegmt=True)},
     )
+    assert retry_after_seconds(response) == 1
+
+
+def test_retry_after_seconds_treats_naive_http_date_as_utc():
+    retry_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(seconds=30)
+    raw = format_datetime(retry_at)  # -0000 offset parses back as naive
+    assert parsedate_to_datetime(raw).tzinfo is None
+    seconds = retry_after_seconds(httpx.Response(429, headers={"retry-after": raw}))
+    assert seconds is not None
+    assert 20 <= seconds <= 30
+
+
+def test_retry_after_seconds_clamps_past_naive_http_date_to_one():
+    retry_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=30)
+    raw = format_datetime(retry_at)  # -0000 offset parses back as naive
+    assert parsedate_to_datetime(raw).tzinfo is None
+    response = httpx.Response(429, headers={"retry-after": raw})
     assert retry_after_seconds(response) == 1
 
 
