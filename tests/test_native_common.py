@@ -53,13 +53,28 @@ def test_retry_after_seconds_ignores_missing_and_garbage():
     assert retry_after_seconds(httpx.Response(429, headers={"retry-after": "soon"})) is None
 
 
-def test_retry_after_seconds_ignores_http_date():
+def test_retry_after_seconds_accepts_http_date_in_future():
     retry_at = datetime.now(UTC) + timedelta(seconds=30)
     response = httpx.Response(
         429,
         headers={"retry-after": format_datetime(retry_at, usegmt=True)},
     )
-    # Native providers only accept delta-seconds; HTTP-date falls through as None.
+    seconds = retry_after_seconds(response)
+    assert seconds is not None
+    assert 20 <= seconds <= 30
+
+
+def test_retry_after_seconds_clamps_past_http_date_to_one():
+    retry_at = datetime.now(UTC) - timedelta(seconds=30)
+    response = httpx.Response(
+        429,
+        headers={"retry-after": format_datetime(retry_at, usegmt=True)},
+    )
+    assert retry_after_seconds(response) == 1
+
+
+def test_retry_after_seconds_ignores_invalid_http_date():
+    response = httpx.Response(429, headers={"retry-after": "Wed, 99 Zzz 2099 99:99:99 GMT"})
     assert retry_after_seconds(response) is None
 
 
