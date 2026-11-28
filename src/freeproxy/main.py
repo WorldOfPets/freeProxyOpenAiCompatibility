@@ -113,6 +113,7 @@ def create_app(
                         http_transport=(native_http_transports or {}).get("glm"),
                         captcha_access_key=(settings.aliyun_captcha_access_key.get_secret_value()),
                         captcha_secret_key=(settings.aliyun_captcha_secret_key.get_secret_value()),
+                        tokens_db=settings.glm_tokens_db,
                     )
                 else:
                     raise ConfigurationError(

@@ -97,10 +97,27 @@ def generate_signature(params: dict[str, str], secret: str) -> str:
     return base64.b64encode(digest).decode("ascii")
 
 
-def _token_db_path() -> Path | None:
+def _token_db_path(explicit: Path | None = None) -> Path | None:
+    """Resolve the harvested token DB.
+
+    Precedence: the explicit setting (gateway `FP_GLM_TOKENS_DB`) wins, then
+    the environment variable for direct/library callers, then the historical
+    default path and finally the in-repo secrets copy. Only existing files are
+    considered, so a blank/stale setting never disables the fallbacks.
+    """
+    candidates: list[Path] = []
+    if explicit is not None:
+        candidates.append(Path(explicit))
     raw = os.getenv("FP_GLM_TOKENS_DB", "").strip()
-    candidates = [Path(raw)] if raw else [Path(DEFAULT_TOKEN_DB)]
-    candidates.append(Path("secrets/glm-tokens.sqlite"))
+    env_path = Path(raw) if raw else None
+    if env_path is not None and env_path not in candidates:
+        candidates.append(env_path)
+    default_path = Path(DEFAULT_TOKEN_DB)
+    if default_path not in candidates:
+        candidates.append(default_path)
+    secrets_path = Path("secrets/glm-tokens.sqlite")
+    if secrets_path not in candidates:
+        candidates.append(secrets_path)
     for path in candidates:
         if path.is_file():
             return path
@@ -270,11 +287,15 @@ def _captcha_from_device_token(
     return _verify_captcha(client, certify_id, data_value, device_token, access_key, secret_key)
 
 
-def generate_captcha_param(access_key: str | None = None, secret_key: str | None = None) -> str:
+def generate_captcha_param(
+    access_key: str | None = None,
+    secret_key: str | None = None,
+    tokens_db: Path | None = None,
+) -> str:
     """Synchronously mint one accepted `captcha_verify_param` value."""
     access_key, secret_key = _credentials(access_key, secret_key)
     with httpx.Client(timeout=40, follow_redirects=True) as client:
-        token_db = _token_db_path()
+        token_db = _token_db_path(tokens_db)
         if token_db is not None:
             device_token = take_device_token(token_db)
             if device_token:
@@ -319,10 +340,12 @@ class GlmCaptchaSolver:
         ttl_seconds: float = CAPTCHA_TTL_SECONDS,
         access_key: str = "",
         secret_key: str = "",
+        tokens_db: Path | None = None,
     ) -> None:
         self.ttl_seconds = ttl_seconds
         self._access_key = access_key.strip()
         self._secret_key = secret_key.strip()
+        self._tokens_db = Path(tokens_db) if tokens_db is not None else None
         self._cache: deque[tuple[float, str]] = deque()
         self._lock = threading.Lock()
         self._async_lock = asyncio.Lock()
@@ -353,7 +376,11 @@ class GlmCaptchaSolver:
             self._cache.append((time.monotonic(), value))
 
     def generate(self) -> str:
-        return generate_captcha_param(self._access_key or None, self._secret_key or None)
+        return generate_captcha_param(
+            self._access_key or None,
+            self._secret_key or None,
+            tokens_db=self._tokens_db,
+        )
 
     async def get(self) -> str:
         cached = self._take_cached()

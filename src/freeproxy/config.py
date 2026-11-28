@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
 from pydantic import (
+    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -21,6 +22,13 @@ from pydantic import (
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .errors import ConfigurationError
+
+DEFAULT_AUTH_STORE_PATH = Path("secrets/tokens.json")
+# The auth CLI documented `FP_AUTH_STORE` while `Settings.auth_store_path`
+# auto-mapped to `FP_AUTH_STORE_PATH`, so the gateway and `freeproxy-auth`
+# could read different stores. Both names are accepted everywhere; the
+# canonical, more specific `FP_AUTH_STORE_PATH` wins when both are set.
+AUTH_STORE_ENV_NAMES: tuple[str, ...] = ("FP_AUTH_STORE_PATH", "FP_AUTH_STORE")
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 _RESERVED_HEADERS = {
@@ -36,6 +44,19 @@ _ALIAS_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:/@+#-]{1,200}$")
 _HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 _LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
+
+
+def resolve_auth_store_path(
+    env: Mapping[str, str] | None = None,
+    default: Path = DEFAULT_AUTH_STORE_PATH,
+) -> Path:
+    """Resolve the token store path, preferring the canonical env name."""
+    source = os.environ if env is None else env
+    for name in AUTH_STORE_ENV_NAMES:
+        value = source.get(name)
+        if value:
+            return Path(value)
+    return default
 
 
 def is_safe_model_id(value: str) -> bool:
@@ -257,6 +278,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        populate_by_name=True,
     )
 
     app_name: str = "FreeProxyAPI"
@@ -271,10 +293,16 @@ class Settings(BaseSettings):
     admin_api_key: SecretStr = SecretStr("")
 
     providers_file: Path = Path("config/providers.json")
-    auth_store_path: Path = Path("secrets/tokens.json")
+    auth_store_path: Path = Field(
+        default=DEFAULT_AUTH_STORE_PATH,
+        validation_alias=AliasChoices(*AUTH_STORE_ENV_NAMES),
+    )
     qwen_headless: bool = True
     aliyun_captcha_access_key: SecretStr = SecretStr("")
     aliyun_captcha_secret_key: SecretStr = SecretStr("")
+    # Optional harvested GLM device-token database. Empty/unset means "fall
+    # back to the built-in candidate paths" in the captcha solver.
+    glm_tokens_db: Path | None = None
     default_alias: str = "auto"
     strict_models: bool = False
 
@@ -306,6 +334,17 @@ class Settings(BaseSettings):
         value = value.upper()
         if value not in _LOG_LEVELS:
             raise ValueError(f"log level must be one of {sorted(_LOG_LEVELS)}")
+        return value
+
+    @field_validator("glm_tokens_db", mode="before")
+    @classmethod
+    def _blank_path_is_none(cls, value: object) -> object:
+        # Pydantic turns "" into a relative Path object (`.`) rather than
+        # failing, which would silently point the solver at the CWD. Treat
+        # unset/blank values as "not configured" instead.
+        if isinstance(value, str):
+            stripped = value.strip()
+            return Path(stripped) if stripped else None
         return value
 
     @field_validator("default_alias")

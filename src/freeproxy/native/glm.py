@@ -618,6 +618,7 @@ def create_glm_app(
     captcha_solver: GlmCaptchaSolver | None = None,
     captcha_access_key: str = "",
     captcha_secret_key: str = "",
+    tokens_db: Path | None = None,
     http_transport: httpx.AsyncBaseTransport | None = None,
     timeout_seconds: float = 600.0,
 ) -> FastAPI:
@@ -628,6 +629,7 @@ def create_glm_app(
             captcha_solver = GlmCaptchaSolver(
                 access_key=captcha_access_key,
                 secret_key=captcha_secret_key,
+                tokens_db=tokens_db,
             )
         transport = GlmHttpTransport(
             resolved_store,
