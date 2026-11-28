@@ -1,0 +1,101 @@
+name: Bug report
+description: Report a reproducible bug in the proxy, providers or streaming
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not paste API keys, upstream tokens,
+        cookies, `.env` contents, captured auth files, prompts or request
+        bodies.** Redact logs before attaching them. For vulnerabilities use
+        [SECURITY.md](https://github.com/WorldOfPets/freeProxyOpenAiCompatibility/blob/master/SECURITY.md)
+        instead of a public issue.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Output of `git rev-parse --short HEAD`, release tag, or image tag.
+      placeholder: "6e17573 / v0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Python and OS
+      description: Python version and operating system / container image.
+      placeholder: "Python 3.12.4, Ubuntu 24.04 (Docker)"
+    validations:
+      required: true
+
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and model
+      description: Which provider and model/alias was used (for example `auto`, `glm-4.6`, `qwen3-coder-plus`).
+      placeholder: "deepseek-chat via alias auto"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stream
+    attributes:
+      label: Streaming enabled?
+      options:
+        - "true"
+        - "false"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead? Include HTTP status and the OpenAI-shaped error JSON if any.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal request (no secrets)
+      description: A minimal `curl` or client snippet with keys replaced by `<redacted>`.
+      render: shell
+      placeholder: |
+        curl -sS http://127.0.0.1:8080/v1/chat/completions \
+          -H "Authorization: Bearer <redacted>" \
+          -H "Content-Type: application/json" \
+          -d '{"model":"auto","stream":false,"messages":[{"role":"user","content":"hi"}]}'
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs
+      description: Relevant proxy logs with request ids. Remove tokens, cookies and prompts.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I ran `uv run ruff check .` and `uv run ruff format --check .`
+          required: false
+        - label: I ran `uv run pytest -q`
+          required: false
+        - label: I removed all secrets, tokens, cookies and prompts from this report
+          required: true

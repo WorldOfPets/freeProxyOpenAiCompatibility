@@ -170,7 +170,7 @@ opencode
 | Модель | Провайдер |
 |---|---|
 | `glm/glm-5.3-flash`, `glm/glm-4.7`, ... | GLM |
-| `qwen/qwen3.7-max`, `qwen/qwen3-coder-plus`, ... | Qwen |
+| `qwen/qwen3.8-max`, `qwen/qwen3.7-plus`, ... | Qwen |
 | `deepseek/deepseek-chat`, `deepseek/deepseek-reasoner`, ... | DeepSeek |
 
 Alias'ы из `config/providers.json`:
@@ -179,17 +179,20 @@ Alias'ы из `config/providers.json`:
 |---|---|---|
 | `auto` | GLM Flash → Qwen Max → DeepSeek Chat | обычный чат по умолчанию |
 | `fast` | GLM Flash → Qwen Plus → DeepSeek Chat | короткие ответы |
-| `coding` | Qwen Coder → GLM 4.7 → DeepSeek Chat | код и tool calling |
+| `coding` | Qwen 3.7 Plus → GLM 4.7 → DeepSeek Chat | код и tool calling |
 | `reasoning` | DeepSeek Reasoner → GLM 5.3 → Qwen Max | сложные рассуждения |
-| `vision` | Qwen VL → GLM-5v | изображения |
+| `vision` | Qwen 3.8 Max → GLM-5v | изображения |
 
 Любую модель можно вызвать и напрямую: `"model": "qwen/qwen3.7-max"`.
 Заголовок `X-FreeProxy-Provider: qwen` принудительно сужает alias до одного
 провайдера.
 
 Список моделей обновляется из upstream'ов в фоне (`/models`), TTL задаётся
-`FP_MODEL_DISCOVERY_TTL_SECONDS`. Если upstream недоступен, используются
-статически прописанные модели из конфига.
+`FP_MODEL_DISCOVERY_TTL_SECONDS`. После успешного discovery `/v1/models`
+показывает только модели upstream'а; если он недоступен, используются
+статически прописанные модели из конфига. Для Qwen список аккаунта появляется
+только после первого чата, который запускает браузер: до этого `/v1/models`
+отдаёт статический список.
 
 ## Лимиты
 
@@ -328,13 +331,13 @@ print(response.choices[0].message.content)
 | `FP_DEFAULT_MAX_TOKENS` | `4096` | подставляется, если клиент не указал |
 | `FP_STRICT_MODELS` | `false` | запрещать неизвестные bare-модели |
 | `FP_PROVIDERS_FILE` | `config/providers.json` | реестр провайдеров |
-| `FP_AUTH_STORE` | `secrets/tokens.json` | хранилище захваченных токенов |
+| `FP_AUTH_STORE_PATH` | `secrets/tokens.json` | хранилище захваченных токенов (`FP_AUTH_STORE` — устаревший псевдоним, `FP_AUTH_STORE_PATH` важнее) |
 | `FP_AUTH_BROWSER_DIR` | `secrets/browser` | профили Playwright |
 | `FP_AUTH_BROWSER_CHANNEL` | `chrome` | `chrome` или `chromium` |
 | `FP_AUTH_CHROME_PATH` | пусто | путь к Chrome/Edge для auth |
 | `FP_AUTH_TIMEOUT_SECONDS` | `600` | таймаут входа |
 | `FP_QWEN_HEADLESS` | `true` | запускать внутренний браузер Qwen без окна |
-| `FP_GLM_TOKENS_DB` | `secrets/glm-tokens.sqlite` | опциональный `tokens.sqlite` с device-токенами GLM |
+| `FP_GLM_TOKENS_DB` | пусто | путь к `tokens.sqlite`; значение из `.env` применяется к gateway и важнее путей по умолчанию (`../GLM-Free-API/tokens.sqlite`, `secrets/glm-tokens.sqlite`) |
 | `FP_ALIYUN_CAPTCHA_ACCESS_KEY` | пусто | Aliyun AccessKey ID для встроенного GLM captcha |
 | `FP_ALIYUN_CAPTCHA_SECRET_KEY` | пусто | Aliyun AccessKey Secret для встроенного GLM captcha |
 | `FP_DEEPSEEK_REPO` | `../FreeDeepseekAPI` | только для `freeproxy-auth export` |
@@ -428,6 +431,12 @@ scripts/                 # smoke, check_upstreams, run_upstreams
 config/                  # реестр провайдеров
 examples/opencode.jsonc  # готовый provider для OpenCode V2
 ```
+
+## Участие в разработке
+
+Как настроить окружение, прогнать проверки и оформить PR, описано в
+[CONTRIBUTING.md](CONTRIBUTING.md). Об уязвимостях сообщайте приватно по
+[SECURITY.md](SECURITY.md), а не через публичные issues.
 
 ## Оригинальные проекты
 

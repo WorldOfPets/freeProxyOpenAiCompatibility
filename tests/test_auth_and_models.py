@@ -78,6 +78,56 @@ async def test_model_discovery_merges_upstream_models(auth_headers):
 
 
 @pytest.mark.asyncio
+async def test_models_advertise_only_discovered_ids(auth_headers):
+    discovered = ["qwen3.7-plus", "qwen3.8-max", "qwen3.7-max"]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "qwen.test":
+            return httpx.Response(
+                200,
+                json={"object": "list", "data": [{"id": model} for model in discovered]},
+            )
+        raise AssertionError(f"unexpected upstream call: {request.url}")
+
+    config = make_config()
+    async with gateway(make_settings(), config, handler) as (app, client):
+        runtime = app.state.runtimes["qwen"]
+        assert await runtime.refresh_models(1) == discovered
+
+        configured = next(provider.models for provider in config.providers if provider.id == "qwen")
+        assert runtime.advertised_models == sorted(discovered)
+        # Routing and alias validation keep accepting configured IDs.
+        assert runtime.known_models == sorted(set(configured) | set(discovered))
+        assert "qwen3-coder-plus" in runtime.known_models
+        assert "qwen3-coder-plus" not in runtime.advertised_models
+
+        response = await client.get("/v1/models", headers=auth_headers)
+        ids = {model["id"] for model in response.json()["data"]}
+        assert {model_id for model_id in ids if model_id.startswith("qwen/")} == {
+            f"qwen/{model}" for model in discovered
+        }
+        assert "qwen/qwen3-coder-plus" not in ids
+
+
+@pytest.mark.asyncio
+async def test_models_fall_back_to_config_when_discovery_fails(auth_headers):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("upstream unavailable", request=request)
+
+    config = make_config()
+    configured = next(provider.models for provider in config.providers if provider.id == "qwen")
+    async with gateway(make_settings(), config, handler) as (app, client):
+        runtime = app.state.runtimes["qwen"]
+        assert await runtime.refresh_models(0.5) == []
+        assert runtime.advertised_models == sorted(configured)
+        assert runtime.known_models == sorted(configured)
+
+        response = await client.get("/v1/models", headers=auth_headers)
+        ids = {model["id"] for model in response.json()["data"]}
+        assert {f"qwen/{model}" for model in configured} <= ids
+
+
+@pytest.mark.asyncio
 async def test_anonymous_identity_cannot_be_rotated_with_headers():
     calls = 0
 

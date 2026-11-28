@@ -41,7 +41,7 @@
           "limit": { "context": 128000, "output": 8192 }
         },
         "coding": {
-          "name": "Coding (Qwen Coder → GLM → DeepSeek)",
+          "name": "Coding (Qwen 3.7 Plus → GLM → DeepSeek)",
           "modelID": "coding",
           "capabilities": {
             "tools": true,
@@ -71,7 +71,7 @@
           "limit": { "context": 128000, "output": 8192 }
         },
         "vision": {
-          "name": "Vision (Qwen VL → GLM V)",
+          "name": "Vision (Qwen 3.8 Max → GLM V)",
           "modelID": "vision",
           "capabilities": {
             "tools": true,
@@ -117,9 +117,9 @@
           },
           "limit": { "context": 128000, "output": 8192 }
         },
-        "qwen-coder": {
-          "name": "Qwen 3 Coder Plus",
-          "modelID": "qwen/qwen3-coder-plus",
+        "qwen-plus": {
+          "name": "Qwen 3.7 Plus",
+          "modelID": "qwen/qwen3.7-plus",
           "capabilities": {
             "tools": true,
             "input": ["text"],

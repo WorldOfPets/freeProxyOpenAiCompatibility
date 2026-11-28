@@ -18,7 +18,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --locked
 
       - name: Lint
         run: uv run ruff check .
@@ -27,4 +27,4 @@ jobs:
         run: uv run ruff format --check .
 
       - name: Tests
-        run: uv run pytest -q
+        run: uv run pytest -q --cov=freeproxy --cov-report=term-missing --cov-fail-under=65

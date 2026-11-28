@@ -105,6 +105,7 @@ def create_app(
                         settings.auth_store_path,
                         transport=(native_transports or {}).get("qwen"),
                         headless=settings.qwen_headless,
+                        model_ttl_seconds=settings.model_discovery_ttl_seconds,
                     )
                 elif provider.native == "glm":
                     native_app = create_glm_app(
@@ -113,6 +114,7 @@ def create_app(
                         http_transport=(native_http_transports or {}).get("glm"),
                         captcha_access_key=(settings.aliyun_captcha_access_key.get_secret_value()),
                         captcha_secret_key=(settings.aliyun_captcha_secret_key.get_secret_value()),
+                        tokens_db=settings.glm_tokens_db,
                     )
                 else:
                     raise ConfigurationError(

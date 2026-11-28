@@ -384,6 +384,10 @@ class GlmHttpTransport:
             )
         return token, user_id
 
+    async def _auth_async(self) -> tuple[str, str]:
+        """Read the auth store off the event loop (it does blocking file I/O)."""
+        return await asyncio.to_thread(self._auth)
+
     @staticmethod
     def _headers(token: str, signature: str) -> dict[str, str]:
         return {
@@ -400,7 +404,7 @@ class GlmHttpTransport:
     async def open_completion(
         self, prompt: str, model: str, tools: list[dict[str, Any]]
     ) -> GlmCompletion:
-        token, user_id = self._auth()
+        token, user_id = await self._auth_async()
         try:
             captcha_param = await self.captcha_solver.get()
         except CaptchaError as exc:
@@ -614,6 +618,7 @@ def create_glm_app(
     captcha_solver: GlmCaptchaSolver | None = None,
     captcha_access_key: str = "",
     captcha_secret_key: str = "",
+    tokens_db: Path | None = None,
     http_transport: httpx.AsyncBaseTransport | None = None,
     timeout_seconds: float = 600.0,
 ) -> FastAPI:
@@ -624,6 +629,7 @@ def create_glm_app(
             captcha_solver = GlmCaptchaSolver(
                 access_key=captcha_access_key,
                 secret_key=captcha_secret_key,
+                tokens_db=tokens_db,
             )
         transport = GlmHttpTransport(
             resolved_store,

@@ -91,6 +91,46 @@ but the collected data is consumed by the Python service.
   Node-side streaming. Captured `baxia_headers` and cookies are injected.
 - The response is streamed back through an exposed page function so Python can
   emit OpenAI SSE deltas in real time.
+- Browser round-trips are bounded. The **first** round-trip (token resolve,
+  `POST /api/v2/chats/new`, and the completion POST that returns the response
+  headers) is capped at `FIRST_RESPONSE_TIMEOUT_SECONDS` (90s), or the provider
+  timeout if smaller, so an Aliyun WAF challenge fails fast instead of waiting
+  out a 600s provider timeout.
+- Streaming uses an **idle** timeout: the full `timeout_ms` applies per event
+  since the last received chunk, not to the whole completion, so a long but
+  healthy answer is not truncated. A silent stream fails fast with
+  `503 upstream_unavailable` ("Qwen stream stalled"), cancels the page reader
+  and drops the in-page handle.
+- Models are discovered from a single Qwen web endpoint, `GET /api/v2/models`,
+  through the **already-started** page only. Both observed payload shapes are
+  accepted — the nested `data.data` envelope and a top-level `data` list.
+  `/v1/models` never launches Playwright: it reports the account's
+  list while the page is warm and the static `MODELS` tuple otherwise.
+  Discovery is bounded by `FIRST_RESPONSE_TIMEOUT_SECONDS`, so a WAF challenge
+  cannot stall a listing.
+- `QwenService.models()` caches the discovered IDs for `300s` behind an
+  `asyncio.Lock`. A failed discovery is retried after ~`30s` instead of on
+  every call; a failed refresh keeps the last good list, and with no list at
+  all the static `MODELS` tuple is used. A completed chat schedules a
+  background warm refresh; that task is owned by the service and cancelled on
+  close (`QwenService.aclose`). Names explicitly requested from a discovered
+  list are kept for the upstream call instead of being folded to the default.
+- Upstream `Not_Found` / `Model_Not_Found` / "Model not found" on create-chat
+  or the completion POST maps to `404 model_not_found` with a message naming
+  the model. `unauthorized` / "Token has expired" (or HTTP 401/403) maps to
+  `401 upstream_auth_error` with the `freeproxy-auth login qwen` hint; the
+  gateway still surfaces provider auth failures to clients as `503`, as for
+  any upstream 401/403.
+- Cleanup (response-handle removal, token re-read, chat deletion) is capped at
+  `CLEANUP_TIMEOUT_SECONDS` (5s) per step and its errors are suppressed, so
+  teardown cannot raise or hang on normal completion, error paths or client
+  disconnect. The request lock is released only by the request that owns it.
+- Aliyun punish bodies (`_____tmd_____/punish`) are detected in non-SSE and
+  error responses and reported as `502 upstream_error` with an
+  "(Aliyun WAF challenge)" hint; body slices stay capped at 300 characters.
+- To clear a manual Access Verification slider, run with
+  `FP_QWEN_HEADLESS=false` and finish `uv run freeproxy-auth login qwen` in the
+  visible window; the service never attempts to solve captchas itself.
 
 ### Stage 3 notes (GLM)
 

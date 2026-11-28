@@ -176,7 +176,7 @@ class ModelRouter:
             )
 
         for runtime in sorted(self._enabled_runtimes(), key=lambda item: item.id):
-            for model in runtime.known_models:
+            for model in runtime.advertised_models:
                 models.append(
                     {
                         "id": f"{runtime.config.route_prefix}/{model}",

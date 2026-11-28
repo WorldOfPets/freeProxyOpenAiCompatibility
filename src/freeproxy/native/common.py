@@ -9,6 +9,8 @@ import time
 import uuid
 from typing import Any
 
+from ..retry import parse_retry_after
+
 MAX_TOOL_SCHEMA_CHARS = 24_000
 MAX_PROMPT_CHARS = 80_000
 TOOL_CALL_FORMAT = '{"tool_call":{"name":"<function_name>","arguments":{...}}}'
@@ -30,13 +32,7 @@ class NativeError(RuntimeError):
 
 
 def retry_after_seconds(response: Any) -> int | None:
-    raw = str(response.headers.get("retry-after", "")).strip()
-    if not raw:
-        return None
-    try:
-        return max(1, int(raw))
-    except ValueError:
-        return None
+    return parse_retry_after(response.headers.get("retry-after"))
 
 
 def content_text(content: Any) -> str:

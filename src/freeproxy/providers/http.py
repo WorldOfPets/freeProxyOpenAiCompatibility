@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import json
-import math
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
 
 from ..config import ProviderConfig, is_safe_model_id
+from ..retry import parse_retry_after
 
 
 @dataclass(frozen=True)
@@ -131,19 +129,4 @@ class ProviderHTTP:
 
     @staticmethod
     def retry_after_seconds(response: httpx.Response) -> int | None:
-        raw = response.headers.get("retry-after")
-        if not raw:
-            return None
-        raw = raw.strip()
-        try:
-            return max(1, int(raw))
-        except ValueError:
-            pass
-        try:
-            retry_at = parsedate_to_datetime(raw)
-        except (TypeError, ValueError):
-            return None
-        if retry_at.tzinfo is None:
-            retry_at = retry_at.replace(tzinfo=UTC)
-        seconds = math.ceil((retry_at - datetime.now(UTC)).total_seconds())
-        return max(1, seconds)
+        return parse_retry_after(response.headers.get("retry-after"))

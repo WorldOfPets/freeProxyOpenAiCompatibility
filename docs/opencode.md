@@ -72,7 +72,7 @@ cp examples/opencode.jsonc ./opencode.jsonc
           "limit": { "context": 128000, "output": 8192 }
         },
         "coding": {
-          "name": "Coding (Qwen Coder → GLM → DeepSeek)",
+          "name": "Coding (Qwen 3.7 Plus → GLM → DeepSeek)",
           "modelID": "coding",
           "capabilities": {
             "tools": true,
@@ -167,12 +167,12 @@ opencode run --model freeproxy/coding "Напиши тест для rate limiter
 |---|---|---|
 | Обычный чат | `freeproxy/auto` | GLM Flash → Qwen Max → DeepSeek Chat |
 | Быстрые ответы | `freeproxy/fast` | GLM Flash → Qwen Plus → DeepSeek Chat |
-| Код, tool calling | `freeproxy/coding` | Qwen Coder → GLM 4.7 → DeepSeek Chat |
+| Код, tool calling | `freeproxy/coding` | Qwen 3.7 Plus → GLM 4.7 → DeepSeek Chat |
 | Сложные рассуждения | `freeproxy/reasoning` | DeepSeek Reasoner → GLM 5.3 → Qwen Max |
-| Картинки | `freeproxy/vision` | Qwen VL → GLM-5v |
+| Картинки | `freeproxy/vision` | Qwen 3.8 Max → GLM-5v |
 | Конкретный провайдер | `freeproxy/glm` и т.п. | без fallback |
 
-Для агентной работы (Build) начните с `coding`. Если Qwen Coder перегружен,
+Для агентной работы (Build) начните с `coding`. Если Qwen 3.7 Plus перегружен,
 alias автоматически уйдёт в GLM 4.7 или DeepSeek Chat. В примере заголовок
 `X-FreeProxy-Provider` не задан; для принудительного провайдера выбирайте
 конкретную модель, например `glm`.

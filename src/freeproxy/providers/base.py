@@ -132,7 +132,19 @@ class ProviderRuntime:
 
     @property
     def known_models(self) -> list[str]:
+        """Models accepted for routing and alias validation (config union discovery)."""
         return sorted(set(self.config.models) | self._discovered_models)
+
+    @property
+    def advertised_models(self) -> list[str]:
+        """Models shown by ``/v1/models``.
+
+        A successful discovery is authoritative; the configured list is only a
+        fallback while discovery has never produced a result.
+        """
+        if self._discovered_models:
+            return sorted(self._discovered_models)
+        return sorted(set(self.config.models))
 
     @property
     def active_requests(self) -> int:

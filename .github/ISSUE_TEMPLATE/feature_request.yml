@@ -1,0 +1,64 @@
+name: Feature request
+description: Propose a new API capability, provider or behavior
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the proposal. Keep the OpenAI-compatible surface in mind:
+        request/response shapes, SSE framing, `tool_calls`, `reasoning_content`
+        and usage fields must stay intact. Do not include secrets, tokens or
+        prompts in this request.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what blocks you today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API or behavior
+      description: Describe the endpoint, field, model alias or behavior you want. Include a request/response sketch if relevant.
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds or other designs you evaluated.
+    validations:
+      required: false
+
+  - type: textarea
+    id: provider-impact
+    attributes:
+      label: Provider impact
+      description: Which provider(s) does this affect (GLM, Qwen, DeepSeek, core/gateway)? Any upstream API, auth or captcha implications?
+    validations:
+      required: true
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: OpenAI compatibility impact
+      description: Does this change existing request/response shapes, SSE events, `tool_calls`, `reasoning_content` or usage fields? Is it additive and backwards compatible?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: willingness
+    attributes:
+      label: Willing to implement?
+      options:
+        - "Yes, I can open a PR"
+        - "Yes, with guidance"
+        - "No, requesting only"
+    validations:
+      required: true

@@ -6,6 +6,8 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
+from ..config import DEFAULT_AUTH_STORE_PATH, resolve_auth_store_path
+
 _PROVIDERS = ("deepseek", "qwen", "glm")
 
 
@@ -24,7 +26,7 @@ def _env() -> dict[str, str]:
 class AuthPaths:
     """Filesystem locations for auth capture and native upstream exports."""
 
-    store: Path = Path("secrets/tokens.json")
+    store: Path = DEFAULT_AUTH_STORE_PATH
     browser_dir: Path = Path("secrets/browser")
     deepseek_repo: Path = Path("../FreeDeepseekAPI")
     qwen_repo: Path = Path("../FreeQwenApi")
@@ -45,7 +47,7 @@ class AuthPaths:
     ) -> AuthPaths:
         env = _env()
         return cls(
-            store=Path(store or env.get("FP_AUTH_STORE", "secrets/tokens.json")),
+            store=Path(store) if store else resolve_auth_store_path(env),
             browser_dir=Path(env.get("FP_AUTH_BROWSER_DIR", "secrets/browser")),
             deepseek_repo=Path(deepseek_repo or env.get("FP_DEEPSEEK_REPO", "../FreeDeepseekAPI")),
             qwen_repo=Path(qwen_repo or env.get("FP_QWEN_REPO", "../FreeQwenApi")),
