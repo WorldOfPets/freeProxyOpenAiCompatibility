@@ -9,6 +9,7 @@ import pytest
 from freeproxy.auth.store import TokenStore
 from freeproxy.config import ProxyConfig
 from freeproxy.native.qwen import (
+    MODEL_ALIASES,
     MODELS,
     QwenStreamParser,
     build_chat_payload,
@@ -124,10 +125,11 @@ def test_qwen_parser_error_chunk():
 
 
 def test_qwen_model_aliases():
-    assert normalize_model("qwen3-coder") == "qwen3-coder-plus"
+    assert normalize_model("qwen3-coder") == "qwen3.7-plus"
     assert normalize_model("QWEN3.7-PLUS") == "qwen3.7-plus"
     assert normalize_model("unknown") == "qwen3.7-max"
     assert "qwen3.7-max" in MODELS
+    assert all(target in MODELS for target in MODEL_ALIASES.values())
 
 
 @pytest.mark.asyncio

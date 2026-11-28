@@ -105,6 +105,7 @@ def create_app(
                         settings.auth_store_path,
                         transport=(native_transports or {}).get("qwen"),
                         headless=settings.qwen_headless,
+                        model_ttl_seconds=settings.model_discovery_ttl_seconds,
                     )
                 elif provider.native == "glm":
                     native_app = create_glm_app(

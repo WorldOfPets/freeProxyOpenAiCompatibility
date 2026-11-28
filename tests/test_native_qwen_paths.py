@@ -6,6 +6,7 @@ Everything browser-shaped is faked: no Playwright, Chrome or network access.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 from pathlib import Path
@@ -13,21 +14,36 @@ from typing import Any
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
 import freeproxy.native.qwen as qwen_module
+from freeproxy import main as main_module
 from freeproxy.auth.store import TokenStore
+from freeproxy.config import ProviderConfig, ProxyConfig
 from freeproxy.native.common import NativeError
 from freeproxy.native.qwen import (
+    DEFAULT_MODEL,
+    MODEL_ALIASES,
     MODELS,
     QwenBrowserCompletion,
     QwenBrowserTransport,
     QwenService,
     QwenStreamParser,
     create_qwen_app,
+    normalize_model,
 )
+
+from .conftest import gateway, make_settings
 
 HEX_ID = re.compile(r"^[0-9a-f]{32}$")
 UUID_TEXT = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+# Idle-window test timings. The margins are intentionally large (per-event
+# delay is 25x shorter than the window) so scheduler jitter cannot race a
+# borderline deadline the way 20ms/50ms constants would.
+IDLE_SECONDS = 0.25
+EVENT_DELAY_SECONDS = 0.01
+LONG_STREAM_EVENTS = 40  # total ~0.4s, longer than the idle window
 
 
 # --- fakes -----------------------------------------------------------------
@@ -36,6 +52,14 @@ UUID_TEXT = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 class RecordingTransport:
     def __init__(self) -> None:
         self.finished: list[tuple[str, str]] = []
+        self.aborted: list[str] = []
+
+    async def abort_request(self, request_id: str, task: asyncio.Task[Any]) -> None:
+        self.aborted.append(request_id)
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
 
     async def finish_request(self, request_id: str, chat_id: str) -> None:
         self.finished.append((request_id, chat_id))
@@ -75,6 +99,30 @@ class FakePage:
 
     async def reload(self, **kwargs: Any) -> None:
         self.reloads += 1
+
+
+class StallingPage:
+    """Page double whose ``evaluate`` can hang for selected calls.
+
+    Cleanup evaluations (which delete the in-page response handle) always
+    return immediately so error-path cleanup cannot stall the test itself.
+    """
+
+    def __init__(self, results: list[Any] | None = None) -> None:
+        self.results = list(results or [])
+        self.calls: list[str] = []
+
+    def is_closed(self) -> bool:
+        return False
+
+    async def evaluate(self, script: str, arg: Any = None) -> Any:
+        self.calls.append(script)
+        if "delete" in script and "getReader" not in script:
+            return None
+        step = self.results.pop(0) if self.results else None
+        if step == "hang":
+            await asyncio.Event().wait()
+        return step
 
 
 async def _done_task(value: Any = None) -> asyncio.Task[Any]:
@@ -232,10 +280,17 @@ async def test_completion_deltas_skips_foreign_ids_and_bad_lines():
 
 
 @pytest.mark.parametrize(
-    ("status", "expected"),
-    [(429, 429), (401, 502), (400, 502), (500, 503), (503, 503)],
+    ("status", "expected", "code"),
+    [
+        (429, 429, "upstream_error"),
+        (401, 401, "upstream_auth_error"),
+        (403, 401, "upstream_auth_error"),
+        (400, 502, "upstream_error"),
+        (500, 503, "upstream_error"),
+        (503, 503, "upstream_error"),
+    ],
 )
-async def test_completion_deltas_maps_done_status(status, expected):
+async def test_completion_deltas_maps_done_status(status, expected, code):
     completion = await _queue_completion(
         RecordingTransport(),
         [{"id": "req-1", "done": True, "status": status, "errorBody": "upstream said no"}],
@@ -243,7 +298,7 @@ async def test_completion_deltas_maps_done_status(status, expected):
     with pytest.raises(NativeError) as info:
         await _collect(completion)
     assert info.value.status_code == expected
-    assert info.value.code == "upstream_error"
+    assert info.value.code == code
 
 
 async def test_completion_deltas_done_error_and_non_sse():
@@ -333,6 +388,68 @@ async def test_completion_aclose_tolerates_finished_task():
 
     await completion.aclose()
 
+    assert transport.finished == [("req-1", "chat-1")]
+
+
+async def test_completion_idle_timeout_fires_when_no_events_arrive():
+    """A silent stream is aborted by the idle window, not a total deadline."""
+    transport = RecordingTransport()
+    task = _pending_task()
+    completion = QwenBrowserCompletion(
+        transport,
+        task,
+        asyncio.Queue(),
+        "req-1",
+        "chat-1",
+        QwenStreamParser(),
+        idle_seconds=IDLE_SECONDS,
+    )
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    with pytest.raises(NativeError) as info:
+        await asyncio.wait_for(_collect(completion), timeout=2)
+    elapsed = loop.time() - started
+
+    assert (info.value.status_code, info.value.code) == (503, "upstream_unavailable")
+    assert "no events for" in info.value.message
+    assert elapsed >= IDLE_SECONDS * 0.8
+    assert transport.aborted == ["req-1"]
+    assert task.cancelled() is True
+
+
+async def test_completion_idle_timeout_allows_stream_longer_than_timeout():
+    """Events keep arriving inside the idle window: a long stream passes."""
+    transport = RecordingTransport()
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    payloads = [
+        {"choices": [{"index": 0, "delta": {"content": f"part{i}"}}]}
+        for i in range(LONG_STREAM_EVENTS)
+    ]
+
+    async def producer() -> None:
+        for payload in payloads:
+            await asyncio.sleep(EVENT_DELAY_SECONDS)
+            queue.put_nowait({"id": "req-1", "line": json.dumps(payload)})
+        queue.put_nowait({"id": "req-1", "done": True, "status": 200})
+
+    task = asyncio.create_task(producer())
+    completion = QwenBrowserCompletion(
+        transport,
+        task,
+        queue,
+        "req-1",
+        "chat-1",
+        QwenStreamParser(),
+        idle_seconds=IDLE_SECONDS,
+    )
+
+    # Total stream time (~0.4s) is longer than the 0.25s idle window, yet no
+    # single gap comes close to it.
+    assert await asyncio.wait_for(_collect(completion), timeout=2) == [
+        (f"part{i}", "") for i in range(LONG_STREAM_EVENTS)
+    ]
+    await completion.aclose()
     assert transport.finished == [("req-1", "chat-1")]
 
 
@@ -433,8 +550,8 @@ def test_headers_merge_baxia_and_filter_unsafe_entries(tmp_path):
     [
         ({"status": 0, "error": "TypeError: fetch failed"}, 503, "upstream_unavailable"),
         ({"status": 429, "text": "slow down"}, 429, "upstream_error"),
-        ({"status": 401, "text": "unauthorized"}, 401, "upstream_error"),
-        ({"status": 403, "text": "forbidden"}, 401, "upstream_error"),
+        ({"status": 401, "text": "unauthorized"}, 401, "upstream_auth_error"),
+        ({"status": 403, "text": "forbidden"}, 401, "upstream_auth_error"),
         ({"status": 500, "text": "boom"}, 502, "upstream_error"),
         (
             {"status": 200, "data": {"success": False, "message": "denied"}},
@@ -482,6 +599,35 @@ async def test_delete_chat_suppresses_page_errors(tmp_path):
     transport = QwenBrowserTransport(tmp_path / "tokens.json")
     transport._page = FakePage(error=RuntimeError("detached"))
     await transport._delete_chat("chat-1", {})
+
+
+async def test_delete_chat_timeout_is_suppressed(tmp_path):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json", timeout_ms=20)
+    transport._page = StallingPage(["hang"])
+
+    await asyncio.wait_for(transport._delete_chat("chat-1", {}), timeout=1)
+
+
+async def test_create_chat_timeout_maps_to_native_error(tmp_path):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json", timeout_ms=20)
+    transport._page = StallingPage(["hang"])
+
+    with pytest.raises(NativeError) as info:
+        await transport._create_chat("qwen3.7-max", {}, "OpenAI request")
+
+    assert (info.value.status_code, info.value.code) == (503, "upstream_unavailable")
+    assert "create-chat timed out" in info.value.message
+
+
+async def test_token_timeout_maps_to_native_error(tmp_path):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json", timeout_ms=20)
+    transport._page = StallingPage(["hang"])
+
+    with pytest.raises(NativeError) as info:
+        await transport._token()
+
+    assert (info.value.status_code, info.value.code) == (503, "upstream_unavailable")
+    assert "token lookup timed out" in info.value.message
 
 
 def test_normalize_cookies_applies_defaults_and_skips_invalid_entries():
@@ -572,8 +718,8 @@ def _patch_open_completion(
     [
         ({"status": 0, "error": "TypeError: fetch failed"}, 503, "upstream_unavailable"),
         ({"status": 429, "errorText": "slow down"}, 429, "upstream_error"),
-        ({"status": 401, "errorText": "unauthorized"}, 401, "upstream_error"),
-        ({"status": 403, "errorText": "forbidden"}, 401, "upstream_error"),
+        ({"status": 401, "errorText": "unauthorized"}, 401, "upstream_auth_error"),
+        ({"status": 403, "errorText": "forbidden"}, 401, "upstream_auth_error"),
         ({"status": 500, "errorText": "boom"}, 502, "upstream_error"),
         ({"status": 200, "contentType": "text/html", "nonSse": "<html>"}, 502, "upstream_error"),
     ],
@@ -614,6 +760,158 @@ async def test_open_completion_success_and_aclose_release_lock(tmp_path, monkeyp
     assert transport._request_lock.locked() is False
     assert transport._queue is None
     assert transport._active_id is None
+
+
+async def test_open_completion_punish_body_reports_waf_hint_and_caps_body(tmp_path, monkeypatch):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json")
+    body = "<html>_____tmd_____/punish" + "y" * 500
+    transport._page = FakePage(  # type: ignore[assignment]
+        [{"status": 200, "contentType": "text/html", "nonSse": body}]
+    )
+    _patch_open_completion(monkeypatch, transport)
+
+    with pytest.raises(NativeError) as info:
+        await transport.open_completion("hi", "qwen3.7-max", [])
+
+    assert (info.value.status_code, info.value.code) == (502, "upstream_error")
+    assert "Aliyun WAF challenge" in info.value.message
+    assert len(info.value.message.split(": ", 1)[1]) <= 300
+    assert transport._request_lock.locked() is False
+
+
+async def test_open_completion_benign_non_sse_body_has_no_waf_hint(tmp_path, monkeypatch):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json")
+    body = "<html><body>Please sign in</body></html>"
+    transport._page = FakePage(  # type: ignore[assignment]
+        [{"status": 200, "contentType": "text/html", "nonSse": body}]
+    )
+    _patch_open_completion(monkeypatch, transport)
+
+    with pytest.raises(NativeError) as info:
+        await transport.open_completion("hi", "qwen3.7-max", [])
+
+    assert (info.value.status_code, info.value.code) == (502, "upstream_error")
+    assert "Aliyun WAF challenge" not in info.value.message
+    assert body in info.value.message
+    assert len(info.value.message.split(": ", 1)[1]) <= 300
+
+
+async def test_open_completion_punish_error_branch_reports_waf_hint_and_caps_body(
+    tmp_path, monkeypatch
+):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json")
+    body = "<html>_____tmd_____/punish" + "z" * 500
+    transport._page = FakePage(  # type: ignore[assignment]
+        [{"status": 500, "errorText": body}]
+    )
+    _patch_open_completion(monkeypatch, transport)
+
+    with pytest.raises(NativeError) as info:
+        await transport.open_completion("hi", "qwen3.7-max", [])
+
+    assert (info.value.status_code, info.value.code) == (502, "upstream_error")
+    assert "Aliyun WAF challenge" in info.value.message
+    assert len(info.value.message.split(": ", 1)[1]) <= 300
+
+
+async def test_first_response_bound_caps_create_chat_and_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(qwen_module, "FIRST_RESPONSE_TIMEOUT_SECONDS", 0.02)
+    transport = QwenBrowserTransport(tmp_path / "tokens.json", timeout_ms=600_000)
+
+    transport._page = StallingPage(["hang"])  # type: ignore[assignment]
+    with pytest.raises(NativeError) as info:
+        await asyncio.wait_for(
+            transport._create_chat("qwen3.7-max", {}, "OpenAI request"), timeout=1
+        )
+    assert (info.value.status_code, info.value.code) == (503, "upstream_unavailable")
+    assert "create-chat timed out" in info.value.message
+
+    transport._page = StallingPage(["hang"])  # type: ignore[assignment]
+    with pytest.raises(NativeError) as info:
+        await asyncio.wait_for(transport._token(), timeout=1)
+    assert (info.value.status_code, info.value.code) == (503, "upstream_unavailable")
+    assert "token lookup timed out" in info.value.message
+
+
+async def test_first_response_bound_caps_first_completion_post(tmp_path, monkeypatch):
+    monkeypatch.setattr(qwen_module, "FIRST_RESPONSE_TIMEOUT_SECONDS", 0.02)
+    transport = QwenBrowserTransport(tmp_path / "tokens.json", timeout_ms=600_000)
+    transport._page = StallingPage(["hang"])  # type: ignore[assignment]
+    _patch_open_completion(monkeypatch, transport)
+
+    with pytest.raises(NativeError) as info:
+        await asyncio.wait_for(transport.open_completion("hi", "qwen3.7-max", []), timeout=1)
+
+    assert (info.value.status_code, info.value.code) == (503, "upstream_unavailable")
+    assert "completion timed out" in info.value.message
+    assert "600s" not in info.value.message
+    assert transport._request_lock.locked() is False
+
+
+async def test_open_completion_idle_window_keeps_full_provider_timeout(tmp_path, monkeypatch):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json", timeout_ms=600_000)
+    transport._page = FakePage(  # type: ignore[assignment]
+        [{"status": 200, "contentType": "text/event-stream", "ok": True}, None]
+    )
+    _patch_open_completion(monkeypatch, transport)
+
+    completion = await transport.open_completion("hi", "qwen3.7-max", [])
+
+    # Only first-response round-trips are capped; the per-event idle window
+    # stays at the provider timeout so long generations are not truncated.
+    assert completion.idle_seconds == pytest.approx(600.0)
+    await completion.aclose()
+
+
+async def test_open_completion_evaluate_timeout_releases_lock_for_next_request(
+    tmp_path, monkeypatch
+):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json", timeout_ms=20)
+    transport._page = StallingPage(["hang"])  # type: ignore[assignment]
+    _patch_open_completion(monkeypatch, transport)
+
+    with pytest.raises(NativeError) as info:
+        await transport.open_completion("hi", "qwen3.7-max", [])
+
+    assert (info.value.status_code, info.value.code) == (503, "upstream_unavailable")
+    assert "completion timed out" in info.value.message
+    assert transport._request_lock.locked() is False
+
+    # The next request must be able to acquire the same slot.
+    transport._page = FakePage(  # type: ignore[assignment]
+        [{"status": 200, "contentType": "text/event-stream", "ok": True}]
+    )
+    completion = await transport.open_completion("hi", "qwen3.7-max", [])
+    assert transport._request_lock.locked() is True
+    await completion.aclose()
+    assert transport._request_lock.locked() is False
+
+
+async def test_stream_idle_timeout_aborts_reader_and_aclose_is_idempotent(tmp_path, monkeypatch):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json", timeout_ms=20)
+    page = StallingPage([{"status": 200, "contentType": "text/event-stream", "ok": True}, "hang"])
+    transport._page = page  # type: ignore[assignment]
+    _patch_open_completion(monkeypatch, transport)
+
+    completion = await transport.open_completion("hi", "qwen3.7-max", [])
+
+    with pytest.raises(NativeError) as info:
+        await asyncio.wait_for(_collect(completion), timeout=2)
+
+    assert (info.value.status_code, info.value.code) == (503, "upstream_unavailable")
+    assert "stream stalled" in info.value.message
+    assert completion.task.done() is True
+    assert completion.task.cancelled() is True
+    assert transport._request_lock.locked() is False
+    assert transport._queue is None
+    assert transport._active_id is None
+    assert any(
+        "delete responses[id]" in script and "getReader" not in script for script in page.calls
+    )
+
+    await completion.aclose()
+    await completion.aclose()
+    assert transport._request_lock.locked() is False
 
 
 async def test_finish_request_clears_state_and_releases_lock(tmp_path, monkeypatch):
@@ -674,6 +972,39 @@ async def test_finish_request_releases_lock_when_cleanup_fails(tmp_path, monkeyp
     assert transport._request_lock.locked() is False
 
 
+@pytest.mark.parametrize("hanging", ["auth", "token", "delete"])
+async def test_finish_request_bounds_hanging_cleanup_steps(tmp_path, monkeypatch, hanging):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json", timeout_ms=50)
+    transport._queue = asyncio.Queue()
+    transport._active_id = "req-1"
+    await transport._request_lock.acquire()
+
+    async def auth() -> dict[str, Any]:
+        if hanging == "auth":
+            await asyncio.Event().wait()
+        return {}
+
+    async def token() -> str:
+        if hanging == "token":
+            await asyncio.Event().wait()
+        return "qwen-token"
+
+    async def delete_chat(chat_id: str, headers: dict[str, str]) -> None:
+        if hanging == "delete":
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(transport, "_auth_async", auth)
+    monkeypatch.setattr(transport, "_token", token)
+    monkeypatch.setattr(transport, "_delete_chat", delete_chat)
+
+    # Cleanup deadline is 50ms here; a wedged step must not block the request.
+    await asyncio.wait_for(transport.finish_request("req-1", "chat-1"), timeout=1)
+
+    assert transport._queue is None
+    assert transport._active_id is None
+    assert transport._request_lock.locked() is False
+
+
 async def test_finish_request_keeps_state_for_foreign_request(tmp_path, monkeypatch):
     transport = QwenBrowserTransport(tmp_path / "tokens.json")
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -698,6 +1029,8 @@ async def test_finish_request_keeps_state_for_foreign_request(tmp_path, monkeypa
 
     assert transport._queue is queue
     assert transport._active_id == "other-request"
+    # A foreign request still owns the slot; cleanup must not release it.
+    assert transport._request_lock.locked() is True
 
 
 # --- service ---------------------------------------------------------------
@@ -840,6 +1173,17 @@ async def test_service_chat_rejects_malformed_tool_markup(tmp_path):
     assert (info.value.status_code, info.value.code) == (502, "malformed_tool_call")
 
 
+async def test_service_chat_schedules_models_refresh(tmp_path, monkeypatch):
+    completion = ScriptedCompletion([_content_payload("answer")])
+    service = QwenService(tmp_path / "tokens.json", ScriptedTransport(completion))
+    refreshes: list[None] = []
+    monkeypatch.setattr(service, "_schedule_models_refresh", lambda: refreshes.append(None))
+
+    await service.chat(_payload())
+
+    assert refreshes == [None]
+
+
 async def test_service_stream_chat_emits_content_reasoning_and_usage(tmp_path):
     completion = ScriptedCompletion(
         [
@@ -875,6 +1219,22 @@ async def test_service_stream_chat_prefers_parser_usage(tmp_path):
     final = _sse_events(chunks)[-2]
 
     assert final["usage"] == {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+
+
+async def test_service_stream_chat_schedules_models_refresh_after_completion(tmp_path, monkeypatch):
+    completion = ScriptedCompletion([_content_payload("answer")])
+    service = QwenService(tmp_path / "tokens.json", ScriptedTransport(completion))
+    refreshes: list[None] = []
+    monkeypatch.setattr(service, "_schedule_models_refresh", lambda: refreshes.append(None))
+
+    stream = service.stream_chat(_payload(), completion)
+    await stream.__anext__()
+    assert refreshes == []
+
+    async for _chunk in stream:
+        pass
+
+    assert refreshes == [None]
 
 
 async def test_service_stream_chat_buffers_tool_call_markup(tmp_path):
@@ -1085,3 +1445,514 @@ async def test_app_builds_default_transport_lazily(tmp_path):
     app = create_qwen_app(tmp_path / "tokens.json")
     assert callable(app.state.close)
     await app.state.close()
+
+
+# --- model discovery -------------------------------------------------------
+
+
+class DiscoveryTransport:
+    """Minimal transport double exposing ``list_models`` only."""
+
+    def __init__(
+        self,
+        models: list[str] | None = None,
+        *,
+        error: BaseException | None = None,
+    ) -> None:
+        self.models = models
+        self.error = error
+        self.calls = 0
+
+    async def list_models(self) -> list[str] | None:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return None if self.models is None else list(self.models)
+
+
+async def test_list_models_parses_v2_envelope_preserving_order():
+    transport = QwenBrowserTransport(Path("unused.json"))
+    transport._page = FakePage(  # type: ignore[assignment]
+        [
+            {
+                "status": 200,
+                "data": {
+                    "success": True,
+                    "request_id": "r-1",
+                    "data": {
+                        "data": [
+                            {"id": "qwen3.7-plus", "name": "Plus"},
+                            {"id": "qwen3.8-max", "name": "Max"},
+                            {"id": "qwen3.7-plus", "name": "duplicate"},
+                        ]
+                    },
+                },
+                "text": "{}",
+            }
+        ]
+    )
+
+    assert await transport.list_models() == ["qwen3.7-plus", "qwen3.8-max"]
+
+
+async def test_list_models_parses_flat_shape():
+    transport = QwenBrowserTransport(Path("unused.json"))
+    transport._page = FakePage(  # type: ignore[assignment]
+        [
+            {
+                "status": 200,
+                "data": {"data": [{"id": "qwen3.8-max"}, {"id": "qwen3.7-plus"}]},
+                "text": "{}",
+            }
+        ]
+    )
+
+    assert await transport.list_models() == ["qwen3.8-max", "qwen3.7-plus"]
+
+
+async def test_list_models_never_launches_browser():
+    transport = QwenBrowserTransport(Path("unused.json"))
+    assert await transport.list_models() is None
+    assert transport._page is None
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"status": 500, "data": None, "text": "boom"},
+        {"status": 200, "data": {"success": False}, "text": "{}"},
+        {"status": 200, "data": None, "text": "<html>_____tmd_____/punish</html>"},
+        {"status": 200, "data": {"data": []}, "text": "{}"},
+        {"status": 0, "error": "TypeError: fetch failed"},
+    ],
+)
+async def test_list_models_returns_none_on_bad_bodies(result):
+    transport = QwenBrowserTransport(Path("unused.json"))
+    transport._page = FakePage([result])  # type: ignore[assignment]
+
+    assert await transport.list_models() is None
+
+
+async def test_list_models_returns_none_on_exception():
+    transport = QwenBrowserTransport(Path("unused.json"))
+    transport._page = FakePage(error=RuntimeError("page detached"))  # type: ignore[assignment]
+
+    assert await transport.list_models() is None
+
+
+async def test_list_models_timeout_returns_none():
+    transport = QwenBrowserTransport(Path("unused.json"), timeout_ms=20)
+    transport._page = StallingPage(["hang"])  # type: ignore[assignment]
+
+    assert await asyncio.wait_for(transport.list_models(), timeout=1) is None
+
+
+def test_static_model_lineup_is_trimmed_newest_first():
+    assert MODELS == ("qwen3.8-max", "qwen3.7-max", "qwen3.7-plus")
+
+
+def test_model_aliases_resolve_inside_static_lineup():
+    assert all(target in MODELS for target in MODEL_ALIASES.values())
+    assert normalize_model("qwen3-coder") == "qwen3.7-plus"
+    assert normalize_model("qwen-max") == "qwen3.8-max"
+    assert normalize_model("unknown-model") == DEFAULT_MODEL
+    # The VL alias was removed with its dead target; it now falls back too.
+    assert normalize_model("qwen-vl-plus") == DEFAULT_MODEL
+
+
+async def test_service_cached_discovery_overrides_static_lineup(tmp_path):
+    transport = DiscoveryTransport(["qwen3.7-plus", "account-only-model"])
+    service = QwenService(tmp_path / "tokens.json", transport)
+
+    assert await service.models() == ["qwen3.7-plus", "account-only-model"]
+    assert service._models_expires_at > 0.0
+    assert await service.models() == ["qwen3.7-plus", "account-only-model"]
+    assert transport.calls == 1
+
+
+async def test_service_models_uses_static_fallback_when_discovery_fails(tmp_path):
+    failing = DiscoveryTransport(error=RuntimeError("no page"))
+    assert await QwenService(tmp_path / "tokens.json", failing).models() == list(MODELS)
+
+    unavailable = DiscoveryTransport(None)
+    assert await QwenService(tmp_path / "tokens.json", unavailable).models() == list(MODELS)
+
+
+async def test_service_models_without_discovery_method_uses_static(tmp_path):
+    service = QwenService(tmp_path / "tokens.json", ScriptedTransport(ScriptedCompletion()))
+
+    assert await service.models() == list(MODELS)
+
+
+async def test_service_models_caches_discovery_until_ttl(tmp_path):
+    transport = DiscoveryTransport(["qwen3.7-plus", "qwen3.8-max"])
+    service = QwenService(tmp_path / "tokens.json", transport)
+
+    assert await service.models() == ["qwen3.7-plus", "qwen3.8-max"]
+    assert await service.models() == ["qwen3.7-plus", "qwen3.8-max"]
+    assert transport.calls == 1
+
+    # Simulate TTL expiry; the next call refreshes the cache.
+    service._models_expires_at = 0.0
+    service._models_retry_at = 0.0
+    assert await service.models() == ["qwen3.7-plus", "qwen3.8-max"]
+    assert transport.calls == 2
+
+
+async def test_service_model_ttl_controls_cache_expiry(tmp_path):
+    transport = DiscoveryTransport(["qwen3.7-plus"])
+    service = QwenService(tmp_path / "tokens.json", transport, model_ttl_seconds=0.02)
+
+    assert await service.models() == ["qwen3.7-plus"]
+    assert transport.calls == 1
+    # Fresh inside the configured TTL: no second discovery call.
+    assert await service.models() == ["qwen3.7-plus"]
+    assert transport.calls == 1
+
+    # Past the tiny TTL the cache expires and the next call refreshes it.
+    await asyncio.sleep(0.05)
+    assert await service.models() == ["qwen3.7-plus"]
+    assert transport.calls == 2
+
+
+@pytest.mark.parametrize("ttl", [0.0, -1.0, float("nan"), float("inf")])
+def test_service_model_ttl_guard_falls_back_to_default(tmp_path, ttl):
+    service = QwenService(tmp_path / "tokens.json", DiscoveryTransport(), model_ttl_seconds=ttl)
+    assert service.model_ttl_seconds == qwen_module.MODEL_CACHE_TTL_SECONDS
+
+
+async def test_service_models_keeps_last_discovered_list_when_refresh_fails(tmp_path):
+    transport = DiscoveryTransport(["qwen3.7-plus"])
+    service = QwenService(tmp_path / "tokens.json", transport)
+
+    assert await service.models() == ["qwen3.7-plus"]
+    service._models_expires_at = 0.0
+    service._models_retry_at = 0.0
+    transport.models = None
+
+    assert await service.models() == ["qwen3.7-plus"]
+
+
+async def test_service_models_lock_serialises_discovery(tmp_path):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowDiscovery(DiscoveryTransport):
+        async def list_models(self) -> list[str] | None:
+            self.calls += 1
+            started.set()
+            await release.wait()
+            return ["qwen3.7-plus"]
+
+    transport = SlowDiscovery()
+    service = QwenService(tmp_path / "tokens.json", transport)
+    tasks = [asyncio.create_task(service.models()) for _ in range(3)]
+    await started.wait()
+    release.set()
+    results = await asyncio.gather(*tasks)
+
+    assert transport.calls == 1
+    assert results == [["qwen3.7-plus"]] * 3
+
+
+async def test_service_model_validation_prefers_known_models(tmp_path):
+    transport = DiscoveryTransport(["qwen3.7-plus"])
+    service = QwenService(tmp_path / "tokens.json", transport)
+    await service.models()
+
+    # A discovered model and every explicitly requested static model are kept.
+    assert service._model({"model": "qwen3.7-plus"}) == "qwen3.7-plus"
+    assert service._model({"model": "qwen3.8-max"}) == "qwen3.8-max"
+    # Dead static IDs are no longer known, so they follow the fallback path.
+    assert service._model({"model": "qwen3-coder-plus"}) == DEFAULT_MODEL
+    assert service._model({"model": "unknown-model"}) == DEFAULT_MODEL
+
+
+async def test_service_warm_refresh_runs_and_can_be_cancelled(tmp_path):
+    transport = DiscoveryTransport(["qwen3.7-plus"])
+    transport._page = object()  # type: ignore[attr-defined]
+    service = QwenService(tmp_path / "tokens.json", transport)
+
+    service._schedule_models_refresh()
+    assert service._models_task is not None
+    await service._models_task
+    assert await service.models() == ["qwen3.7-plus"]
+    await service.aclose()
+
+    hanging_started = asyncio.Event()
+
+    class HangingDiscovery(DiscoveryTransport):
+        async def list_models(self) -> list[str] | None:
+            hanging_started.set()
+            await asyncio.Event().wait()
+            return None
+
+    hanging = HangingDiscovery()
+    hanging._page = object()  # type: ignore[attr-defined]
+    hanging_service = QwenService(tmp_path / "tokens.json", hanging)
+    hanging_service._schedule_models_refresh()
+    await hanging_started.wait()
+    task = hanging_service._models_task
+    assert task is not None
+    await hanging_service.aclose()
+    assert task.cancelled() is True
+    assert hanging_service._models_task is None
+
+
+async def test_app_models_returns_discovered_ids(tmp_path):
+    class AppDiscoveryTransport(AppTransport):
+        async def list_models(self) -> list[str] | None:
+            return ["qwen3.7-plus", "qwen3.8-max"]
+
+    app = create_qwen_app(_store_with_token(tmp_path), transport=AppDiscoveryTransport())
+    async with _client(app) as client:
+        response = await client.get("/v1/models")
+
+    assert response.status_code == 200
+    assert [entry["id"] for entry in response.json()["data"]] == [
+        "qwen3.7-plus",
+        "qwen3.8-max",
+    ]
+
+
+async def test_app_models_uses_static_list_without_starting_browser(tmp_path, monkeypatch):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json")
+
+    async def unexpected_start() -> None:
+        raise AssertionError("/v1/models must not start the browser")
+
+    monkeypatch.setattr(transport, "_ensure_started", unexpected_start)
+    app = create_qwen_app(_store_with_token(tmp_path), transport=transport)
+    async with _client(app) as client:
+        response = await client.get("/v1/models")
+    await app.state.close()
+
+    assert response.status_code == 200
+    assert [entry["id"] for entry in response.json()["data"]] == list(MODELS)
+    assert transport._page is None
+
+
+async def test_app_models_static_fallback_returns_trimmed_lineup(tmp_path):
+    app = create_qwen_app(_store_with_token(tmp_path), transport=AppTransport())
+    async with _client(app) as client:
+        response = await client.get("/v1/models")
+
+    assert response.status_code == 200
+    assert [entry["id"] for entry in response.json()["data"]] == [
+        "qwen3.8-max",
+        "qwen3.7-max",
+        "qwen3.7-plus",
+    ]
+
+
+async def test_create_qwen_app_forwards_model_ttl(tmp_path):
+    transport = DiscoveryTransport(["qwen3.7-plus"])
+    app = create_qwen_app(
+        _store_with_token(tmp_path),
+        transport=transport,
+        model_ttl_seconds=0.02,
+    )
+    service = app.state.service
+    assert service.model_ttl_seconds == pytest.approx(0.02)
+
+    loop = asyncio.get_running_loop()
+    before = loop.time()
+    assert await service.models() == ["qwen3.7-plus"]
+    assert service._models_expires_at == pytest.approx(before + 0.02, abs=0.05)
+
+
+async def test_gateway_passes_model_discovery_ttl_to_qwen_app(monkeypatch):
+    captured: list[dict[str, Any]] = []
+
+    def fake_create_qwen_app(store_path: Any, **kwargs: Any) -> FastAPI:
+        captured.append(kwargs)
+        return FastAPI()
+
+    monkeypatch.setattr(main_module, "create_qwen_app", fake_create_qwen_app)
+    provider = ProviderConfig(
+        id="qwen",
+        name="Qwen",
+        base_url="http://qwen.test/api",
+        auth_mode="none",
+        models=["qwen3.7-max"],
+        default_model="qwen3.7-max",
+        native="qwen",
+    )
+    config = ProxyConfig(providers=[provider], aliases={"auto": ["qwen/qwen3.7-max"]})
+    settings = make_settings(model_discovery_ttl_seconds=1234)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    async with gateway(settings, config, handler):
+        pass
+
+    assert captured[0]["model_ttl_seconds"] == 1234
+
+
+# --- model_not_found / token expiry ---------------------------------------
+
+
+@pytest.mark.parametrize("code", ["Not_Found", "Model_Not_Found"])
+async def test_create_chat_model_not_found_maps_to_404(tmp_path, code):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json")
+    transport._page = FakePage(  # type: ignore[assignment]
+        [
+            {
+                "status": 200,
+                "data": {
+                    "success": False,
+                    "request_id": "r-1",
+                    "data": {"code": code, "details": "Model not found"},
+                },
+                "text": "{}",
+            }
+        ]
+    )
+
+    with pytest.raises(NativeError) as info:
+        await transport._create_chat("qwen3-coder-plus", {}, "OpenAI request")
+
+    assert info.value.status_code == 404
+    assert info.value.code == "model_not_found"
+    assert info.value.message == ("Qwen model 'qwen3-coder-plus' is not available for this account")
+
+
+async def test_create_chat_model_not_found_by_message(tmp_path):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json")
+    transport._page = FakePage(  # type: ignore[assignment]
+        [{"status": 400, "data": None, "text": '{"details":"model not found"}'}]
+    )
+
+    with pytest.raises(NativeError) as info:
+        await transport._create_chat("qwen3.6-plus", {}, "OpenAI request")
+
+    assert (info.value.status_code, info.value.code) == (404, "model_not_found")
+    assert "qwen3.6-plus" in info.value.message
+
+
+async def test_create_chat_token_expiry_stays_401(tmp_path):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json")
+    transport._page = FakePage(  # type: ignore[assignment]
+        [
+            {
+                "status": 200,
+                "data": {
+                    "success": False,
+                    "data": {"code": "unauthorized", "details": "Token has expired"},
+                },
+                "text": "{}",
+            }
+        ]
+    )
+
+    with pytest.raises(NativeError) as info:
+        await transport._create_chat("qwen3.7-max", {}, "OpenAI request")
+
+    assert (info.value.status_code, info.value.code) == (401, "upstream_auth_error")
+    assert "freeproxy-auth login qwen" in info.value.message
+
+
+async def test_completion_non_sse_model_not_found_maps_to_404(tmp_path, monkeypatch):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json")
+    body = json.dumps(
+        {
+            "success": False,
+            "request_id": "r-1",
+            "data": {"code": "Not_Found", "details": "Model not found"},
+        }
+    )
+    transport._page = FakePage(  # type: ignore[assignment]
+        [{"status": 200, "contentType": "application/json", "nonSse": body}]
+    )
+    _patch_open_completion(monkeypatch, transport)
+
+    with pytest.raises(NativeError) as info:
+        await transport.open_completion("hi", "qwen3-coder-plus", [])
+
+    assert (info.value.status_code, info.value.code) == (404, "model_not_found")
+    assert "qwen3-coder-plus" in info.value.message
+    assert transport._request_lock.locked() is False
+
+
+async def test_completion_non_sse_token_expiry_stays_401(tmp_path, monkeypatch):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json")
+    body = json.dumps(
+        {"success": False, "data": {"code": "unauthorized", "details": "Token has expired"}}
+    )
+    transport._page = FakePage(  # type: ignore[assignment]
+        [{"status": 200, "contentType": "application/json", "nonSse": body}]
+    )
+    _patch_open_completion(monkeypatch, transport)
+
+    with pytest.raises(NativeError) as info:
+        await transport.open_completion("hi", "qwen3.7-max", [])
+
+    assert (info.value.status_code, info.value.code) == (401, "upstream_auth_error")
+
+
+async def test_queued_non_sse_model_not_found_maps_to_404():
+    completion = await _queue_completion(
+        RecordingTransport(),
+        [
+            {
+                "id": "req-1",
+                "done": True,
+                "status": 200,
+                "nonSse": '{"data":{"code":"Not_Found","details":"Model not found"}}',
+            }
+        ],
+    )
+    completion.model = "qwen3.6-plus"
+
+    with pytest.raises(NativeError) as info:
+        await _collect(completion)
+
+    assert (info.value.status_code, info.value.code) == (404, "model_not_found")
+    assert "qwen3.6-plus" in info.value.message
+
+
+async def test_app_maps_create_chat_model_not_found_to_404(tmp_path, monkeypatch):
+    transport = QwenBrowserTransport(tmp_path / "tokens.json")
+    transport._page = FakePage(  # type: ignore[assignment]
+        [
+            {
+                "status": 200,
+                "data": {
+                    "success": False,
+                    "data": {"code": "Not_Found", "details": "Model not found"},
+                },
+                "text": "{}",
+            }
+        ]
+    )
+
+    async def ensure_started() -> None:
+        return None
+
+    async def auth() -> dict[str, Any]:
+        return {}
+
+    async def token() -> str:
+        return "qwen-token"
+
+    async def delete_chat(chat_id: str, headers: dict[str, str]) -> None:
+        return None
+
+    monkeypatch.setattr(transport, "_ensure_started", ensure_started)
+    monkeypatch.setattr(transport, "_auth_async", auth)
+    monkeypatch.setattr(transport, "_token", token)
+    monkeypatch.setattr(transport, "_delete_chat", delete_chat)
+
+    app = create_qwen_app(_store_with_token(tmp_path), transport=transport)
+    async with _client(app) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json=_payload(model="qwen3.8-max"),
+        )
+
+    assert response.status_code == 404
+    error = response.json()["error"]
+    assert error["code"] == "model_not_found"
+    assert "qwen3.8-max" in error["message"]
+    assert transport._request_lock.locked() is False
