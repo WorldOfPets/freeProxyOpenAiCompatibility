@@ -73,6 +73,11 @@ uv run freeproxy-auth login qwen --cdp-url http://127.0.0.1:9222
 
 ## 3. Что появляется на диске
 
+Путь к хранилищу задаётся `FP_AUTH_STORE_PATH` (по умолчанию
+`secrets/tokens.json`); шлюз и `freeproxy-auth` читают одну и ту же настройку.
+Устаревшее имя `FP_AUTH_STORE` тоже поддерживается, но при одновременном
+задании обоих побеждает `FP_AUTH_STORE_PATH`.
+
 `secrets/tokens.json`:
 
 ```json
@@ -131,7 +136,8 @@ Auth store: secrets/tokens.json
 4. Если слайдер не проходит, попробуйте `--cdp-url` с уже запущенным Chrome.
 5. Для GLM встроенный генератор captcha может получить risk-отказ Aliyun
    (`F001`). Надёжный путь — один раз собрать `tokens.sqlite` legacy-коллектором
-   и указать `FP_GLM_TOKENS_DB`.
+   и указать `FP_GLM_TOKENS_DB` (в `.env` или окружении; значение применяется к
+   работающему gateway и имеет приоритет над путями по умолчанию).
 
 ## 7. Безопасность
 

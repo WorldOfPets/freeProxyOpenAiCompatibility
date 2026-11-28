@@ -120,8 +120,11 @@ JSON: используются `${ENV_VAR}` / `${ENV_VAR:-default}`. При от
 
 - Статические `models` — fallback и гарантия, что модель появится в UI даже при
   недоступном upstream.
-- Discovery в фоне дергает `/models` и объединяет результаты; TTL —
-  `FP_MODEL_DISCOVERY_TTL_SECONDS`.
+- Discovery в фоне дергает `/models` (TTL — `FP_MODEL_DISCOVERY_TTL_SECONDS`);
+  после успешного ответа `/v1/models` показывает только найденные модели.
+  Статические `models` остаются fallback'ом, пока discovery ни разу не удался.
+- Для маршрутизации и валидации alias'ов `known_models` — объединение
+  статических и найденных ID.
 - `/v1/models` показывает alias'ы и namespaced ID. Bare-модели принимаются, но
   не перечисляются, чтобы не было коллизий.
 - `FP_STRICT_MODELS=true` запрещает неизвестные bare-модели (полезно, чтобы

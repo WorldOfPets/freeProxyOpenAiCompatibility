@@ -87,6 +87,19 @@ uv run freeproxy-auth status
 запрос пришёл не с loopback. Для локальной проверки используйте
 `http://127.0.0.1:8080`, а не имя машины/внешний IP.
 
+## 404
+
+### `404 model_not_found`
+
+Модель известна провайдеру (статический список или ранее обнаруженный список
+аккаунта), но её нет у аккаунта: Qwen web отвечает `Not_Found` /
+`Model not found` на создание чата или completion. Сообщение содержит имя
+модели, а в ответе есть `X-FreeProxy-Upstream-Status: 404`.
+
+Выберите модель из `GET /v1/models` (после первого чата там список именно
+вашего аккаунта) или запросите другого провайдера через `X-FreeProxy-Provider`.
+Это не лимит и не WAF: повторные попытки с тем же именем модели не помогут.
+
 ## 429
 
 Смотрите `Retry-After` и `X-RateLimit-Scope`.
@@ -121,8 +134,13 @@ uv run freeproxy-auth status
 
 - GLM: `captcha_failed` — нет `FP_ALIYUN_CAPTCHA_ACCESS_KEY`/
   `FP_ALIYUN_CAPTCHA_SECRET_KEY`, Aliyun risk/flow rejection или нет device-токенов.
-  Задайте credentials, затем при необходимости `FP_GLM_TOKENS_DB` с `tokens.sqlite`
-  или повторите вход.
+  Задайте credentials, затем при необходимости `FP_GLM_TOKENS_DB` с `tokens.sqlite`.
+  Значение из `.env` применяется к работающему gateway и имеет приоритет над
+  путями по умолчанию (`../GLM-Free-API/tokens.sqlite`,
+  `secrets/glm-tokens.sqlite`) или повторите вход.
+  Если Aliyun отвечает `RGV587_ERROR` («too many requests»), это risk-блокировка
+  по частоте: выдержите cooldown и не повторяйте запросы подряд — иначе
+  блокировка продлевается.
 - Qwen: `upstream_auth_error` — токен/сессия истекли; `uv run freeproxy-auth login qwen`.
   Если браузер не стартует, установите Chrome или `uv run playwright install chromium`.
 - DeepSeek: `provider_not_configured` — нет токена в `secrets/tokens.json`;
@@ -139,6 +157,17 @@ uv run freeproxy-auth status
 Upstream вернул `200`, но не JSON (или сломанный JSON). Смотрите лог
 провайдера: часто это HTML captcha/WAF или страница логина.
 
+- Qwen: тело с `_____tmd_____/punish` — это Aliyun WAF Access Verification.
+  Ошибка приходит как `502 upstream_error` с подсказкой `(Aliyun WAF challenge)`
+  вместо зависания. Первый round-trip (токен, создание чата и заголовки
+  completion POST) ограничен 90 секундами, поэтому challenge не ждёт полный
+  `timeout_ms`. Запустите сервис с `FP_QWEN_HEADLESS=false`, пройдите
+  слайдер в открывшемся окне (или `uv run freeproxy-auth login qwen`) и
+  повторите запрос. Стрим без событий дольше `timeout_ms` падает с
+  `503 upstream_unavailable` (`Qwen stream stalled`), а не висит бесконечно.
+  Очистка (снятие handle, удаление чата) ограничена 5 секундами на шаг и не
+  блокирует завершение запроса или disconnect.
+
 ### Upstream вернул 401/403
 
 Шлюз отдаёт `503`, потому что клиент не может исправить авторизацию прокси.
@@ -147,6 +176,9 @@ Upstream вернул `200`, но не JSON (или сломанный JSON). С
 - GLM: `ZAI_TOKEN` читается из `secrets/tokens.json`; при `401` повторите вход.
 - DeepSeek: веб-токен истёк — `uv run freeproxy-auth login deepseek`.
 - Qwen: токен короткоживущий — повторите `uv run freeproxy-auth login qwen`.
+  Провайдер различает истечение сессии (`unauthorized` / `Token has expired`)
+  и отдаёт `401 upstream_auth_error` с подсказкой про повторный вход; для
+  клиента шлюза это по-прежнему `503`.
 
 ## OpenCode
 
@@ -216,7 +248,8 @@ upstream (все три проекта обычно отправляют его)
 - Образ содержит Chromium для Qwen; `secrets/` монтируется writable, потому что
   GLM удаляет израсходованные device-токены из `tokens.sqlite`; `.env` читается
   compose, а не образом.
-- Для GLM положите `tokens.sqlite` в `secrets/` и задайте `FP_GLM_TOKENS_DB`.
+- Для GLM положите `tokens.sqlite` в `secrets/` и задайте `FP_GLM_TOKENS_DB`
+  (значение из `.env` применяется и имеет приоритет над путями по умолчанию).
 - Проверка:
 
 ```bash

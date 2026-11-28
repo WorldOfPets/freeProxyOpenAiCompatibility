@@ -30,7 +30,8 @@ uv run freeproxy
 - читает `ZAI_TOKEN` из `secrets/tokens.json` и `user_id` из JWT;
 - подписывает запрос HMAC-SHA256 с salt key;
 - получает `captcha_verify_param`:
-  - из `tokens.sqlite`, если задан `FP_GLM_TOKENS_DB` или файл найден в
+  - из `tokens.sqlite`, если задан `FP_GLM_TOKENS_DB` (значение из `.env`
+    применяется к работающему gateway и имеет приоритет) или файл найден в
     `../GLM-Free-API/tokens.sqlite` / `secrets/glm-tokens.sqlite`;
   - иначе генерирует device-token и проходит Aliyun `InitCaptchaV3` →
     `VerifyCaptchaV3` через портированные скрипты в
@@ -102,9 +103,25 @@ Go-код в runtime не используется: Python читает табл
 
 ### Модели
 
-`qwen3.8-max`, `qwen3.8-omni-flash`, `qwen3.7-max`, `qwen3.7-plus`,
-`qwen3.6-plus`, `qwen3.5-plus`, `qwen3.5-omni-plus`, `qwen3-coder-plus`,
-`qwen3-vl-plus`, `qwen3-max`, `qwen3-235b-a22b`.
+Пока браузерная страница Qwen не запущена, `/v1/models` отдаёт статический
+список ниже. После первого чата (страница «прогрета») провайдер читает список
+моделей аккаунта из `GET /api/v2/models` и кэширует его на
+`FP_MODEL_DISCOVERY_TTL_SECONDS` секунд (по умолчанию 300).
+Неудачное обновление сохраняет предыдущий список и повторяется примерно через
+30 секунд; если дискавери не удался ни разу, используется статический список.
+Сам листинг браузер не запускает — `/v1/models` никогда не стартует Playwright.
+Шлюз подхватывает обновлённый список фоновым discovery
+(`FP_MODEL_DISCOVERY_TTL_SECONDS`), после чего `/v1/models` показывает только
+модели аккаунта; статический список остаётся fallback'ом до успешного
+discovery.
+
+Модель, которой нет у аккаунта, возвращает `404 model_not_found` с именем
+модели в сообщении: выберите модель из `GET /v1/models`.
+
+Источник истины — список моделей аккаунта из discovery; он же наполняет
+`/v1/models` после первого успешного обновления. Статический fallback (только
+до discovery, для холодного старта): `qwen3.8-max`, `qwen3.7-max`,
+`qwen3.7-plus`.
 
 ## DeepSeek Web
 
