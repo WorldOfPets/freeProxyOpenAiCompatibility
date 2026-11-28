@@ -45,11 +45,9 @@
       "prefix": "qwen",
       "enabled": true,
       "models": [
+        "qwen3.8-max",
         "qwen3.7-max",
-        "qwen3.7-plus",
-        "qwen3.6-plus",
-        "qwen3-coder-plus",
-        "qwen3-vl-plus"
+        "qwen3.7-plus"
       ],
       "default_model": "qwen3.7-max",
       "models_path": "/v1/models",
@@ -109,7 +107,7 @@
       "deepseek/deepseek-chat"
     ],
     "coding": [
-      "qwen/qwen3-coder-plus",
+      "qwen/qwen3.7-plus",
       "glm/glm-4.7",
       "deepseek/deepseek-chat"
     ],
@@ -119,7 +117,7 @@
       "qwen/qwen3.7-max"
     ],
     "vision": [
-      "qwen/qwen3-vl-plus",
+      "qwen/qwen3.8-max",
       "glm/GLM-5v-Turbo"
     ]
   }
